@@ -44,3 +44,21 @@ export interface Outline {
 export interface GenerateOutlineRequest {
   requirement: string;
 }
+
+// --- Study chat types --- //
+
+export type StudyRole = "user" | "assistant";
+
+export interface StudyMessage {
+  role: StudyRole;
+  content: string;
+}
+
+export interface StudyChatRequest {
+  history: StudyMessage[];
+}
+
+export interface StudyChatResponse {
+  reply: string;
+  isOpening: boolean;
+}

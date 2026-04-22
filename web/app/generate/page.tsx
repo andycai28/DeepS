@@ -58,7 +58,7 @@ export default function GeneratePage() {
         // brief visual pause before redirect so user sees it landed
         setTimeout(() => {
           if (controller.signal.aborted) return;
-          router.replace(`/chat?outline_id=${encodeURIComponent(result.id)}`);
+          router.replace(`/study/${encodeURIComponent(result.id)}`);
         }, POST_COMPLETE_DELAY_MS);
       })
       .catch((err) => {
