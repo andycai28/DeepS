@@ -15,7 +15,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from deeptutor.outline import storage
-from deeptutor.outline.generator import OutlineGenerationError, generate_outline
+from deeptutor.outline.generator import OutlineGenerationError, stream_outline
+from deeptutor.outline.models import Outline
 from deeptutor.outline.tutor import ChatMessage, stream_tutor_reply
 
 logger = logging.getLogger(__name__)
@@ -52,29 +53,72 @@ def _sse_event(event_name: str, data: dict[str, Any]) -> str:
 
 
 @router.post("/generate")
-async def post_generate_outline(request: GenerateOutlineRequest) -> dict[str, Any]:
-    """Generate an Outline from a free-form user requirement.
+async def post_generate_outline(
+    request: GenerateOutlineRequest,
+) -> StreamingResponse:
+    """Stream outline generation as Server-Sent Events.
 
-    On success persists to data/user/outlines/{id}.json (unless persist=False)
-    and returns the full outline serialized with camelCase aliases so the
-    frontend contract matches web/lib/types/outline.ts exactly.
+    Event shapes:
+        event: courseTitle
+        data: {"value": "..."}
+
+        event: courseDescription
+        data: {"value": "..."}
+
+        event: languageDirective
+        data: {"value": "..."}
+
+        event: kp
+        data: {<KnowledgePoint camelCase JSON>}
+
+        event: done
+        data: {"outline": {<full Outline JSON>}}
+
+        event: error
+        data: {"message": "..."}
+
+    Persists the assembled outline to data/user/outlines/{id}.json on the
+    `done` frame (unless `persist=false` in the request body).
     """
-    try:
-        outline = await generate_outline(request.requirement)
-    except OutlineGenerationError as exc:
-        logger.warning("Outline generation failed (bad LLM output): %s", exc)
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001 — surface unexpected errors to client
-        logger.exception("Outline generation crashed")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    if request.persist:
+    async def event_stream() -> AsyncIterator[str]:
         try:
-            storage.save(outline)
-        except Exception:
-            logger.exception("Failed to persist outline %s", outline.id)
+            async for event in stream_outline(request.requirement):
+                event_type = event["type"]
+                if event_type == "done":
+                    outline: Outline = event["outline"]
+                    if request.persist:
+                        try:
+                            storage.save(outline)
+                        except Exception:
+                            logger.exception(
+                                "Failed to persist outline %s", outline.id,
+                            )
+                    yield _sse_event(
+                        "done",
+                        {"outline": outline.model_dump(by_alias=True, mode="json")},
+                    )
+                elif event_type == "kp":
+                    yield _sse_event("kp", event["data"])
+                else:
+                    # courseTitle / courseDescription / languageDirective
+                    yield _sse_event(event_type, {"value": event["value"]})
+        except OutlineGenerationError as exc:
+            logger.warning("Outline stream failed (bad LLM output): %s", exc)
+            yield _sse_event("error", {"message": str(exc)})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Outline stream crashed")
+            yield _sse_event("error", {"message": str(exc)})
 
-    return outline.model_dump(by_alias=True, mode="json")
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.get("/{outline_id}")

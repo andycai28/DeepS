@@ -5,9 +5,13 @@ import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import { ArrowLeft, FileText, Loader2 } from "lucide-react";
 
-import { generateOutline } from "@/lib/outline-api";
+import { streamOutline } from "@/lib/outline-api";
 import { streamStudyChat } from "@/lib/study-api";
-import type { Outline, StudyMessage } from "@/lib/types/outline";
+import type {
+  KnowledgePoint,
+  Outline,
+  StudyMessage,
+} from "@/lib/types/outline";
 
 import OutlineVisualizer from "./components/OutlineVisualizer";
 
@@ -22,8 +26,8 @@ type Phase = "bootstrapping" | "outline" | "opening" | "complete" | "error";
  * Generation preview page.
  *
  * Two-phase progress UX:
- *   1. outline  — generate the syllabus
- *   2. opening  — prompt the tutor for a course opening (no KP focus)
+ *   1. outline  — stream the syllabus (KPs populate the visualizer as they land)
+ *   2. opening  — ask the tutor for a course opening (no KP focus)
  *
  * Both artifacts land in sessionStorage before we redirect to /study,
  * so the study page is populated the moment it mounts.
@@ -31,7 +35,8 @@ type Phase = "bootstrapping" | "outline" | "opening" | "complete" | "error";
 export default function GeneratePage() {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>("bootstrapping");
-  const [outline, setOutline] = useState<Outline | null>(null);
+  const [title, setTitle] = useState<string | null>(null);
+  const [kps, setKps] = useState<KnowledgePoint[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const requirementRef = useRef<string>("");
@@ -51,25 +56,33 @@ export default function GeneratePage() {
     setPhase("outline");
 
     const run = async () => {
-      // Phase 1: generate the outline.
-      const result = await generateOutline(
+      // Phase 1: stream the outline. Visualizer picks up KPs one by one.
+      const outline: Outline = await streamOutline(
         { requirement },
+        {
+          onTitle: (value) => setTitle(value),
+          onKp: (kp) => setKps((prev) => [...prev, kp]),
+        },
         controller.signal,
       );
       if (controller.signal.aborted) return;
+
       sessionStorage.setItem(
-        `${OUTLINE_STORAGE_PREFIX}${result.id}`,
-        JSON.stringify(result),
+        `${OUTLINE_STORAGE_PREFIX}${outline.id}`,
+        JSON.stringify(outline),
       );
       sessionStorage.removeItem(REQUIREMENT_STORAGE_KEY);
-      setOutline(result);
+      // Use the server-authoritative list once done (covers any KPs the
+      // client missed if the stream was slow to flush).
+      setKps(outline.outlines);
+      setTitle(outline.title);
       setPhase("opening");
 
       // Phase 2: pre-generate the tutor's course opening. No KP focus yet,
       // so the system prompt's State section is the brief overview. We drain
       // the SSE stream silently — /generate only needs the final text.
       const { reply } = await streamStudyChat(
-        result.id,
+        outline.id,
         { history: [], currentKpId: null },
         {},
         controller.signal,
@@ -79,14 +92,14 @@ export default function GeneratePage() {
         { role: "assistant", content: reply },
       ];
       sessionStorage.setItem(
-        `${MESSAGES_STORAGE_PREFIX}${result.id}:messages`,
+        `${MESSAGES_STORAGE_PREFIX}${outline.id}:messages`,
         JSON.stringify(initialMessages),
       );
       setPhase("complete");
 
       setTimeout(() => {
         if (controller.signal.aborted) return;
-        router.replace(`/study/${encodeURIComponent(result.id)}`);
+        router.replace(`/study/${encodeURIComponent(outline.id)}`);
       }, POST_COMPLETE_DELAY_MS);
     };
 
@@ -128,7 +141,9 @@ export default function GeneratePage() {
   const headline = isError
     ? "生成失败"
     : phase === "outline"
-      ? "正在生成大纲…"
+      ? title
+        ? `正在生成《${title}》`
+        : "正在生成大纲…"
       : phase === "opening"
         ? "正在准备课堂导读…"
         : "准备就绪";
@@ -136,7 +151,9 @@ export default function GeneratePage() {
   const subline = isError
     ? "请返回主页修改主题后再试一次"
     : phase === "outline"
-      ? "AI 正在理解你的主题并梳理知识结构"
+      ? kps.length > 0
+        ? `已梳理出 ${kps.length} 个知识点，继续生成中…`
+        : "AI 正在理解你的主题并梳理知识结构"
       : phase === "opening"
         ? "AI 老师正在为你写开场白"
         : "正在进入学习空间";
@@ -147,7 +164,9 @@ export default function GeneratePage() {
       ? "w-16 bg-[var(--primary)]"
       : phase === "opening"
         ? "w-12 bg-[var(--primary)]"
-        : "w-6 bg-[var(--primary)]";
+        : kps.length > 0
+          ? "w-8 bg-[var(--primary)]"
+          : "w-4 bg-[var(--primary)]";
 
   return (
     <div className="relative flex h-screen w-screen items-center justify-center overflow-y-auto px-6 py-10">
@@ -213,7 +232,7 @@ export default function GeneratePage() {
         </div>
 
         <div className="mt-6 border-t border-[var(--border)] pt-6">
-          <OutlineVisualizer outline={outline} />
+          <OutlineVisualizer outlines={kps} />
         </div>
 
         <div className="mt-6 flex items-center justify-center text-xs text-[var(--muted-foreground)]">

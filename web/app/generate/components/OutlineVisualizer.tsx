@@ -2,31 +2,36 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 
-import type { Outline } from "@/lib/types/outline";
+import type { KnowledgePoint } from "@/lib/types/outline";
 
 interface OutlineVisualizerProps {
-  outline: Outline | null;
+  /** KPs available right now. Empty / undefined → skeleton. */
+  outlines?: KnowledgePoint[];
+  /** Cap visible rows; overflow collapses into a "+N more" line. */
+  maxVisible?: number;
 }
 
 /**
- * Pre-generation: 3 pulsing skeleton rows.
- * Post-generation: actual knowledge-point titles staggered in.
- *
- * Inspired by OpenMAIC's StreamingOutlineVisualizer but stripped down —
- * we don't yet have real streaming (Phase 1.5 will add SSE).
+ * While outlines are streaming / still empty: 3 pulsing skeleton rows.
+ * As each KP arrives it animates in under the previous one; the skeletons
+ * naturally disappear once we have real content.
  */
-export default function OutlineVisualizer({ outline }: OutlineVisualizerProps) {
-  if (outline) {
-    const items = outline.outlines.slice(0, 5);
+export default function OutlineVisualizer({
+  outlines,
+  maxVisible = 5,
+}: OutlineVisualizerProps) {
+  if (outlines && outlines.length > 0) {
+    const items = outlines.slice(0, maxVisible);
+    const overflow = outlines.length - items.length;
     return (
       <div className="space-y-2.5">
-        <AnimatePresence>
+        <AnimatePresence initial={false}>
           {items.map((kp, idx) => (
             <motion.div
               key={kp.id}
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.3, delay: idx * 0.08 }}
+              transition={{ duration: 0.3, delay: idx * 0.04 }}
               className="flex items-start gap-3"
             >
               <span className="mt-0.5 inline-flex h-5 min-w-[1.25rem] shrink-0 items-center justify-center rounded-full bg-[var(--primary)]/10 px-1.5 text-[11px] font-medium text-[var(--primary)]">
@@ -37,15 +42,15 @@ export default function OutlineVisualizer({ outline }: OutlineVisualizerProps) {
               </span>
             </motion.div>
           ))}
-          {outline.outlines.length > items.length && (
+          {overflow > 0 && (
             <motion.div
               key="more"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              transition={{ duration: 0.3, delay: items.length * 0.08 }}
+              transition={{ duration: 0.3, delay: items.length * 0.04 }}
               className="pl-8 text-xs text-[var(--muted-foreground)]"
             >
-              还有 {outline.outlines.length - items.length} 条…
+              还有 {overflow} 条…
             </motion.div>
           )}
         </AnimatePresence>
