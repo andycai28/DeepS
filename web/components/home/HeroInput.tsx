@@ -11,10 +11,11 @@ import { useRouter } from "next/navigation";
 import { ArrowUp, Loader2 } from "lucide-react";
 import { motion } from "framer-motion";
 
-import { generateOutline } from "@/lib/outline-api";
-
 const MIN_HEIGHT = 140;
 const MAX_HEIGHT = 300;
+
+// Passed to /generate via sessionStorage to avoid long URL params.
+const REQUIREMENT_STORAGE_KEY = "ds:requirement";
 
 export default function HeroInput() {
   const router = useRouter();
@@ -35,23 +36,23 @@ export default function HeroInput() {
 
   const canSubmit = value.trim().length > 0 && !submitting;
 
-  const handleSubmit = useCallback(async () => {
+  const handleSubmit = useCallback(() => {
     if (!canSubmit) return;
     setSubmitting(true);
     setError(null);
     try {
-      const outline = await generateOutline({ requirement: value.trim() });
-      router.replace(`/chat?outline_id=${encodeURIComponent(outline.id)}`);
+      sessionStorage.setItem(REQUIREMENT_STORAGE_KEY, value.trim());
+      router.push("/generate");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "生成失败，请重试");
       setSubmitting(false);
+      setError(err instanceof Error ? err.message : "无法进入生成页面");
     }
   }, [canSubmit, router, value]);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
-      void handleSubmit();
+      handleSubmit();
     }
   };
 
@@ -89,7 +90,7 @@ export default function HeroInput() {
       </div>
 
       <div className="mt-3 flex items-center justify-between text-xs text-[var(--muted-foreground)]">
-        <span>{submitting ? "正在生成大纲…" : "Cmd/Ctrl + Enter 提交"}</span>
+        <span>{submitting ? "正在打开…" : "Cmd/Ctrl + Enter 提交"}</span>
         <span>默认 15-30 分钟 · 中文</span>
       </div>
 
