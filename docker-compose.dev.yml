@@ -30,12 +30,18 @@ services:
       - ./web/locales:/app/web/locales:ro
       - ./web/public:/app/web/public:ro
 
-      # Mount tsconfig.json only: the upstream Dockerfile doesn't copy it into
-      # the dev stage, so without this mount Next.js auto-creates an empty
-      # tsconfig on first run and the "@/*" path alias silently stops working.
-      # Don't mount next.config.ts / postcss.config / components.json here —
-      # bind-mounting those triggers Next.js's config-watcher to restart-loop.
+      # Mount frontend configs that the upstream Dockerfile's dev stage fails
+      # to copy into the image:
+      #   - tsconfig.json: without this, Next.js auto-creates an empty tsconfig
+      #     and the "@/*" path alias silently stops working
+      #   - tailwind.config.js / postcss.config.js: without these, `next dev`
+      #     produces zero Tailwind CSS at runtime (production build baked these
+      #     in already, so GHCR image works; dev target rebuilds from scratch)
+      # Don't mount next.config.ts here — Next.js's config watcher treats
+      # bind-mounted config as constantly-changing and restart-loops the server.
       - ./web/tsconfig.json:/app/web/tsconfig.json:ro
+      - ./web/tailwind.config.js:/app/web/tailwind.config.js:ro
+      - ./web/postcss.config.js:/app/web/postcss.config.js:ro
 
       # Mount data directories (writable) - output to local ./data
       - ./data/user:/app/data/user
