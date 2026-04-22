@@ -61,6 +61,18 @@ function appendToLastByAgent(
   return copy;
 }
 
+/**
+ * Drop messages whose content didn't land (stream cut early, agent returned
+ * empty, etc.). The backend's Pydantic schemas require content.length >= 1,
+ * so empty entries must never make it into sessionStorage or the next
+ * request payload.
+ */
+function dropEmptyContent(list: StudyMessage[]): StudyMessage[] {
+  return list.filter(
+    (m) => typeof m.content === "string" && m.content.length > 0,
+  );
+}
+
 function toDiscussionHistory(messages: StudyMessage[]): DiscussionMessage[] {
   return messages
     .filter((m) => m.content.length > 0)
@@ -128,7 +140,17 @@ export default function StudyPage() {
     const cached = sessionStorage.getItem(messagesKey(outlineId));
     if (cached) {
       try {
-        setMessages(JSON.parse(cached) as StudyMessage[]);
+        const parsed = JSON.parse(cached) as StudyMessage[];
+        // Older sessions (pre-fix) may have persisted empty placeholders —
+        // scrub them on load so the next submit doesn't hit the 422.
+        const cleaned = dropEmptyContent(parsed);
+        setMessages(cleaned);
+        if (cleaned.length !== parsed.length) {
+          sessionStorage.setItem(
+            messagesKey(outlineId),
+            JSON.stringify(cleaned),
+          );
+        }
       } catch {
         sessionStorage.removeItem(messagesKey(outlineId));
       }
@@ -217,7 +239,7 @@ export default function StudyPage() {
     // behind by a prior discussion-mode turn that the model returned
     // nothing for). The backend's ChatMessage / DiscussionMessage schemas
     // require content.length >= 1, so empty entries would trip 422.
-    const cleanPrior = priorMessages.filter((m) => m.content.length > 0);
+    const cleanPrior = dropEmptyContent(priorMessages);
     const historyWithUser: StudyMessage[] = [
       ...cleanPrior,
       { role: "user", content: trimmed },
@@ -268,10 +290,13 @@ export default function StudyPage() {
         );
         if (controller.signal.aborted) return;
 
-        // Snapshot the final transcript for persistence.
+        // Snapshot + clean the final transcript. Agents that produced
+        // no text leave behind empty placeholders here; drop them so
+        // the next turn's request doesn't fail validation.
         setMessages((prev) => {
-          persistMessages(prev);
-          return prev;
+          const cleaned = dropEmptyContent(prev);
+          persistMessages(cleaned);
+          return cleaned;
         });
       } catch (err) {
         if (controller.signal.aborted) return;
