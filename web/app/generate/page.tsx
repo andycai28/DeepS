@@ -97,7 +97,7 @@ export default function GeneratePage() {
   const isError = status === "error";
 
   return (
-    <div className="relative flex h-full w-full items-center justify-center overflow-y-auto px-6 py-10">
+    <div className="relative flex h-screen w-screen items-center justify-center overflow-y-auto px-6 py-10">
       <button
         type="button"
         onClick={handleBack}
