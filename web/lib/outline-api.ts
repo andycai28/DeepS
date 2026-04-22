@@ -64,7 +64,17 @@ export async function streamOutline(
       let detail = response.statusText;
       try {
         const body = await response.json();
-        if (body && typeof body.detail === "string") detail = body.detail;
+        if (body && typeof body.detail === "string") {
+          detail = body.detail;
+        } else if (body && Array.isArray(body.detail)) {
+          const first = body.detail[0];
+          if (first && typeof first.msg === "string") {
+            const loc = Array.isArray(first.loc)
+              ? first.loc.join(".")
+              : "";
+            detail = loc ? `${first.msg} (${loc})` : first.msg;
+          }
+        }
       } catch {
         // fall through to statusText
       }

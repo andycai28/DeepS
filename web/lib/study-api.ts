@@ -90,7 +90,18 @@ export async function streamStudyChat(
       let detail = response.statusText;
       try {
         const body = await response.json();
-        if (body && typeof body.detail === "string") detail = body.detail;
+        if (body && typeof body.detail === "string") {
+          detail = body.detail;
+        } else if (body && Array.isArray(body.detail)) {
+          // FastAPI validation errors — surface the first issue.
+          const first = body.detail[0];
+          if (first && typeof first.msg === "string") {
+            const loc = Array.isArray(first.loc)
+              ? first.loc.join(".")
+              : "";
+            detail = loc ? `${first.msg} (${loc})` : first.msg;
+          }
+        }
       } catch {
         // fall through
       }
@@ -242,7 +253,18 @@ export async function streamDiscuss(
       let detail = response.statusText;
       try {
         const body = await response.json();
-        if (body && typeof body.detail === "string") detail = body.detail;
+        if (body && typeof body.detail === "string") {
+          detail = body.detail;
+        } else if (body && Array.isArray(body.detail)) {
+          // FastAPI validation errors — surface the first issue.
+          const first = body.detail[0];
+          if (first && typeof first.msg === "string") {
+            const loc = Array.isArray(first.loc)
+              ? first.loc.join(".")
+              : "";
+            detail = loc ? `${first.msg} (${loc})` : first.msg;
+          }
+        }
       } catch {
         // fall through
       }

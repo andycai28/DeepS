@@ -213,8 +213,13 @@ export default function StudyPage() {
     if (!trimmed || isSending) return;
 
     const priorMessages = messages;
+    // Strip any empty-content stragglers (e.g. an agent placeholder left
+    // behind by a prior discussion-mode turn that the model returned
+    // nothing for). The backend's ChatMessage / DiscussionMessage schemas
+    // require content.length >= 1, so empty entries would trip 422.
+    const cleanPrior = priorMessages.filter((m) => m.content.length > 0);
     const historyWithUser: StudyMessage[] = [
-      ...priorMessages,
+      ...cleanPrior,
       { role: "user", content: trimmed },
     ];
 
@@ -272,7 +277,7 @@ export default function StudyPage() {
         if (controller.signal.aborted) return;
         setChatError(err instanceof Error ? err.message : "讨论失败");
         // Drop any partial agent bubbles — restore the pre-submit transcript.
-        setMessages(priorMessages);
+        setMessages(cleanPrior);
         setComposerValue(trimmed);
       } finally {
         if (!controller.signal.aborted) setIsSending(false);
