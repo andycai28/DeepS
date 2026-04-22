@@ -13,13 +13,14 @@ scenes + full details for the currently-focused one.
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from deeptutor.outline.models import KnowledgePoint, Outline
-from deeptutor.services.llm import complete
+from deeptutor.services.llm import complete, stream
 from deeptutor.services.llm.config import get_llm_config
 
 logger = logging.getLogger(__name__)
@@ -168,3 +169,37 @@ async def generate_tutor_reply(
         temperature=_DEFAULT_TEMPERATURE,
         max_tokens=_DEFAULT_MAX_TOKENS,
     )
+
+
+async def stream_tutor_reply(
+    outline: Outline,
+    history: list[ChatMessage],
+    current_kp_id: str | None = None,
+) -> AsyncIterator[str]:
+    """Stream the tutor's next reply token-by-token.
+
+    Same inputs as `generate_tutor_reply`, but yields string chunks as the
+    LLM produces them so the frontend can render progressively.
+    """
+    messages = _build_messages(outline, history, current_kp_id)
+
+    config = get_llm_config()
+    binding = config.binding or "openai"
+
+    logger.info(
+        "Tutor stream for outline=%s turn=%d focus=%s binding=%s/%s",
+        outline.id,
+        len(history),
+        current_kp_id or "-",
+        binding,
+        config.model,
+    )
+
+    async for chunk in stream(
+        prompt="",  # ignored when `messages` is provided
+        messages=messages,
+        temperature=_DEFAULT_TEMPERATURE,
+        max_tokens=_DEFAULT_MAX_TOKENS,
+    ):
+        if chunk:
+            yield chunk

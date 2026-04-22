@@ -5,15 +5,18 @@ Mounted at /api/v1/outline (see deeptutor/api/main.py include_router).
 
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from deeptutor.outline import storage
 from deeptutor.outline.generator import OutlineGenerationError, generate_outline
-from deeptutor.outline.tutor import ChatMessage, generate_tutor_reply
+from deeptutor.outline.tutor import ChatMessage, stream_tutor_reply
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -35,18 +38,17 @@ class StudyChatRequest(BaseModel):
     current_kp_id: str | None = Field(default=None, alias="currentKpId")
 
 
-class StudyChatResponse(BaseModel):
-    model_config = {"populate_by_name": True}
-
-    reply: str
-    is_opening: bool = Field(..., alias="isOpening")
-
-
 def _load_outline_or_404(outline_id: str):
     try:
         return storage.load(outline_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"outline {outline_id} not found") from exc
+
+
+def _sse_event(event_name: str, data: dict[str, Any]) -> str:
+    """Format a single Server-Sent Event frame."""
+    payload = json.dumps(data, ensure_ascii=False, default=str)
+    return f"event: {event_name}\ndata: {payload}\n\n"
 
 
 @router.post("/generate")
@@ -87,23 +89,45 @@ async def get_outline(outline_id: str) -> dict[str, Any]:
 async def post_study_chat(
     outline_id: str,
     request: StudyChatRequest,
-) -> dict[str, Any]:
-    """Produce the next tutor reply for this study session.
+) -> StreamingResponse:
+    """Produce the next tutor reply as a Server-Sent Events stream.
+
+    Event shape:
+      event: chunk
+      data: {"content": "...token..."}
+
+      event: done
+      data: {"isOpening": true|false}
+
+      event: error
+      data: {"message": "..."}
 
     If `history` is empty, the tutor opens the class with a welcome message
     grounded in the outline. Otherwise the tutor responds to the latest
     student turn, keeping the full outline available as system context.
     """
     outline = _load_outline_or_404(outline_id)
-    try:
-        reply = await generate_tutor_reply(
-            outline,
-            request.history,
-            current_kp_id=request.current_kp_id,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Tutor reply failed for outline=%s", outline_id)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    is_opening = len(request.history) == 0
 
-    response = StudyChatResponse(reply=reply, is_opening=len(request.history) == 0)
-    return response.model_dump(by_alias=True, mode="json")
+    async def event_stream() -> AsyncIterator[str]:
+        try:
+            async for chunk in stream_tutor_reply(
+                outline,
+                request.history,
+                current_kp_id=request.current_kp_id,
+            ):
+                yield _sse_event("chunk", {"content": chunk})
+            yield _sse_event("done", {"isOpening": is_opening})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Tutor stream failed for outline=%s", outline_id)
+            yield _sse_event("error", {"message": str(exc)})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )

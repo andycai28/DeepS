@@ -5,7 +5,7 @@ import { useParams } from "next/navigation";
 
 import OutlineSidebar from "@/components/study/OutlineSidebar";
 import StudyChat from "@/components/study/StudyChat";
-import { fetchOutline, postStudyChat } from "@/lib/study-api";
+import { fetchOutline, streamStudyChat } from "@/lib/study-api";
 import type {
   KnowledgePoint,
   Outline,
@@ -17,6 +17,24 @@ const MESSAGES_CACHE_PREFIX = "ds:study:";
 
 function messagesKey(outlineId: string): string {
   return `${MESSAGES_CACHE_PREFIX}${outlineId}:messages`;
+}
+
+/**
+ * Append `chunk` to the content of the last message in the list, returning a
+ * new array. Used while streaming an assistant reply token-by-token.
+ */
+function appendToLast(
+  list: StudyMessage[],
+  chunk: string,
+): StudyMessage[] {
+  if (list.length === 0) return list;
+  const copy = [...list];
+  const last = copy[copy.length - 1];
+  copy[copy.length - 1] = {
+    ...last,
+    content: last.content + chunk,
+  };
+  return copy;
 }
 
 export default function StudyPage() {
@@ -94,24 +112,30 @@ export default function StudyPage() {
     setIsSending(true);
     setChatError(null);
 
-    // Kickoff always starts without a selected KP — new-topic resets that
-    // invariant and first-entry via /generate won't have one either.
-    postStudyChat(
+    // Placeholder assistant bubble that streams in.
+    setMessages([{ role: "assistant", content: "" }]);
+
+    streamStudyChat(
       outlineId,
       { history: [], currentKpId: null },
+      {
+        onChunk: (chunk) => {
+          if (controller.signal.aborted) return;
+          setMessages((prev) => appendToLast(prev, chunk));
+        },
+      },
       controller.signal,
     )
-      .then((response) => {
+      .then(({ reply }) => {
         if (controller.signal.aborted) return;
-        const next: StudyMessage[] = [
-          { role: "assistant", content: response.reply },
-        ];
-        setMessages(next);
-        sessionStorage.setItem(messagesKey(outlineId), JSON.stringify(next));
+        const final: StudyMessage[] = [{ role: "assistant", content: reply }];
+        setMessages(final);
+        sessionStorage.setItem(messagesKey(outlineId), JSON.stringify(final));
       })
       .catch((err) => {
         if (controller.signal.aborted) return;
         setChatError(err instanceof Error ? err.message : "课堂开篇失败");
+        setMessages([]);
         kickoffStartedRef.current = false; // allow retry after failure
       })
       .finally(() => {
@@ -128,40 +152,46 @@ export default function StudyPage() {
     const trimmed = composerValue.trim();
     if (!trimmed || isSending) return;
 
+    const priorMessages = messages;
     const history: StudyMessage[] = [
-      ...messages,
+      ...priorMessages,
       { role: "user", content: trimmed },
     ];
 
     setIsSending(true);
     setChatError(null);
-    setMessages(history);
+    // User turn + empty assistant placeholder; onChunk will fill the placeholder.
+    setMessages([...history, { role: "assistant", content: "" }]);
     setComposerValue("");
 
     const controller = new AbortController();
     abortRef.current = controller;
 
     try {
-      const response = await postStudyChat(
+      const { reply } = await streamStudyChat(
         outlineId,
         { history, currentKpId: selectedKpId },
+        {
+          onChunk: (chunk) => {
+            if (controller.signal.aborted) return;
+            setMessages((prev) => appendToLast(prev, chunk));
+          },
+        },
         controller.signal,
       );
       if (controller.signal.aborted) return;
-      const finalMessages: StudyMessage[] = [
+
+      const final: StudyMessage[] = [
         ...history,
-        { role: "assistant", content: response.reply },
+        { role: "assistant", content: reply },
       ];
-      setMessages(finalMessages);
-      sessionStorage.setItem(
-        messagesKey(outlineId),
-        JSON.stringify(finalMessages),
-      );
+      setMessages(final);
+      sessionStorage.setItem(messagesKey(outlineId), JSON.stringify(final));
     } catch (err) {
       if (controller.signal.aborted) return;
       setChatError(err instanceof Error ? err.message : "发送失败");
-      // roll back the student message so they can edit and resend
-      setMessages(messages);
+      // Roll back: remove both the user turn and the placeholder, restore composer.
+      setMessages(priorMessages);
       setComposerValue(trimmed);
     } finally {
       if (!controller.signal.aborted) {

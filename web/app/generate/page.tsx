@@ -6,7 +6,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { ArrowLeft, FileText, Loader2 } from "lucide-react";
 
 import { generateOutline } from "@/lib/outline-api";
-import { postStudyChat } from "@/lib/study-api";
+import { streamStudyChat } from "@/lib/study-api";
 import type { Outline, StudyMessage } from "@/lib/types/outline";
 
 import OutlineVisualizer from "./components/OutlineVisualizer";
@@ -66,15 +66,17 @@ export default function GeneratePage() {
       setPhase("opening");
 
       // Phase 2: pre-generate the tutor's course opening. No KP focus yet,
-      // so the system prompt's State section is the brief overview.
-      const chatResponse = await postStudyChat(
+      // so the system prompt's State section is the brief overview. We drain
+      // the SSE stream silently — /generate only needs the final text.
+      const { reply } = await streamStudyChat(
         result.id,
         { history: [], currentKpId: null },
+        {},
         controller.signal,
       );
       if (controller.signal.aborted) return;
       const initialMessages: StudyMessage[] = [
-        { role: "assistant", content: chatResponse.reply },
+        { role: "assistant", content: reply },
       ];
       sessionStorage.setItem(
         `${MESSAGES_STORAGE_PREFIX}${result.id}:messages`,

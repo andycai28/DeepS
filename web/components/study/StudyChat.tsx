@@ -43,27 +43,34 @@ export default function StudyChat({
   };
 
   const lastMsg = messages[messages.length - 1];
-  const awaitingReply =
-    isSending && lastMsg && lastMsg.role === "user";
-  const preparingOpening = isSending && messages.length === 0;
+  // Before the SSE stream emits its first chunk, the trailing assistant
+  // bubble is empty — surface a subtle "thinking" indicator until content
+  // starts flowing in. As soon as any content arrives, this auto-hides.
+  const awaitingFirstToken =
+    isSending &&
+    lastMsg?.role === "assistant" &&
+    lastMsg.content.length === 0;
+
+  // Visible messages: hide the empty placeholder from the stream so the
+  // "thinking" indicator can take its spot cleanly. Once tokens arrive,
+  // the message has content and renders normally.
+  const visibleMessages = awaitingFirstToken
+    ? messages.slice(0, -1)
+    : messages;
 
   return (
     <div className="flex h-full flex-col">
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-8">
         <div className="mx-auto flex max-w-3xl flex-col gap-6">
-          {preparingOpening && (
-            <div className="flex items-center gap-2 text-sm text-[var(--muted-foreground)]">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              正在准备课堂开篇…
-            </div>
-          )}
-          {messages.map((msg, idx) => (
+          {visibleMessages.map((msg, idx) => (
             <Message key={idx} message={msg} />
           ))}
-          {awaitingReply && (
+          {awaitingFirstToken && (
             <div className="flex items-center gap-2 text-sm text-[var(--muted-foreground)]">
               <Loader2 className="h-4 w-4 animate-spin" />
-              AI 老师正在思考…
+              {visibleMessages.length === 0
+                ? "正在准备课堂开篇…"
+                : "AI 老师正在思考…"}
             </div>
           )}
         </div>
