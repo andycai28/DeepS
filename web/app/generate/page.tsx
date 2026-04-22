@@ -6,26 +6,31 @@ import { AnimatePresence, motion } from "framer-motion";
 import { ArrowLeft, FileText, Loader2 } from "lucide-react";
 
 import { generateOutline } from "@/lib/outline-api";
-import type { Outline } from "@/lib/types/outline";
+import { postStudyChat } from "@/lib/study-api";
+import type { Outline, StudyMessage } from "@/lib/types/outline";
 
 import OutlineVisualizer from "./components/OutlineVisualizer";
 
 const REQUIREMENT_STORAGE_KEY = "ds:requirement";
 const OUTLINE_STORAGE_PREFIX = "ds:outline:";
-const POST_COMPLETE_DELAY_MS = 700;
+const MESSAGES_STORAGE_PREFIX = "ds:study:";
+const POST_COMPLETE_DELAY_MS = 500;
 
-type Status = "bootstrapping" | "generating" | "complete" | "error";
+type Phase = "bootstrapping" | "outline" | "opening" | "complete" | "error";
 
 /**
  * Generation preview page.
  *
- * Reads the requirement from sessionStorage (populated by HeroInput),
- * calls the outline API, shows progress, then redirects to /chat with
- * the new outline_id. If no requirement is present we bounce back home.
+ * Two-phase progress UX:
+ *   1. outline  — generate the syllabus
+ *   2. opening  — prompt the tutor for a course opening (no KP focus)
+ *
+ * Both artifacts land in sessionStorage before we redirect to /study,
+ * so the study page is populated the moment it mounts.
  */
 export default function GeneratePage() {
   const router = useRouter();
-  const [status, setStatus] = useState<Status>("bootstrapping");
+  const [phase, setPhase] = useState<Phase>("bootstrapping");
   const [outline, setOutline] = useState<Outline | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -43,31 +48,53 @@ export default function GeneratePage() {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    setStatus("generating");
+    setPhase("outline");
 
-    generateOutline({ requirement }, controller.signal)
-      .then((result) => {
+    const run = async () => {
+      // Phase 1: generate the outline.
+      const result = await generateOutline(
+        { requirement },
+        controller.signal,
+      );
+      if (controller.signal.aborted) return;
+      sessionStorage.setItem(
+        `${OUTLINE_STORAGE_PREFIX}${result.id}`,
+        JSON.stringify(result),
+      );
+      sessionStorage.removeItem(REQUIREMENT_STORAGE_KEY);
+      setOutline(result);
+      setPhase("opening");
+
+      // Phase 2: pre-generate the tutor's course opening. No KP focus yet,
+      // so the system prompt's State section is the brief overview.
+      const chatResponse = await postStudyChat(
+        result.id,
+        { history: [], currentKpId: null },
+        controller.signal,
+      );
+      if (controller.signal.aborted) return;
+      const initialMessages: StudyMessage[] = [
+        { role: "assistant", content: chatResponse.reply },
+      ];
+      sessionStorage.setItem(
+        `${MESSAGES_STORAGE_PREFIX}${result.id}:messages`,
+        JSON.stringify(initialMessages),
+      );
+      setPhase("complete");
+
+      setTimeout(() => {
         if (controller.signal.aborted) return;
-        sessionStorage.setItem(
-          `${OUTLINE_STORAGE_PREFIX}${result.id}`,
-          JSON.stringify(result),
-        );
-        sessionStorage.removeItem(REQUIREMENT_STORAGE_KEY);
-        setOutline(result);
-        setStatus("complete");
-        // brief visual pause before redirect so user sees it landed
-        setTimeout(() => {
-          if (controller.signal.aborted) return;
-          router.replace(`/study/${encodeURIComponent(result.id)}`);
-        }, POST_COMPLETE_DELAY_MS);
-      })
-      .catch((err) => {
-        if (controller.signal.aborted) return;
-        setStatus("error");
-        setErrorMessage(
-          err instanceof Error ? err.message : "生成失败，请返回重试",
-        );
-      });
+        router.replace(`/study/${encodeURIComponent(result.id)}`);
+      }, POST_COMPLETE_DELAY_MS);
+    };
+
+    run().catch((err) => {
+      if (controller.signal.aborted) return;
+      setPhase("error");
+      setErrorMessage(
+        err instanceof Error ? err.message : "生成失败，请返回重试",
+      );
+    });
 
     return () => {
       controller.abort();
@@ -81,7 +108,6 @@ export default function GeneratePage() {
   }, [router]);
 
   const handleRetry = useCallback(() => {
-    // preserve the requirement so the user can tweak it on the home input
     if (requirementRef.current) {
       sessionStorage.setItem(REQUIREMENT_STORAGE_KEY, requirementRef.current);
     }
@@ -89,12 +115,37 @@ export default function GeneratePage() {
     router.replace("/");
   }, [router]);
 
-  if (status === "bootstrapping") {
+  if (phase === "bootstrapping") {
     return null;
   }
 
-  const isComplete = status === "complete";
-  const isError = status === "error";
+  const isComplete = phase === "complete";
+  const isError = phase === "error";
+  const isWorking = phase === "outline" || phase === "opening";
+
+  const headline = isError
+    ? "生成失败"
+    : phase === "outline"
+      ? "正在生成大纲…"
+      : phase === "opening"
+        ? "正在准备课堂导读…"
+        : "准备就绪";
+
+  const subline = isError
+    ? "请返回主页修改主题后再试一次"
+    : phase === "outline"
+      ? "AI 正在理解你的主题并梳理知识结构"
+      : phase === "opening"
+        ? "AI 老师正在为你写开场白"
+        : "正在进入学习空间";
+
+  const progressBar = isError
+    ? "w-2 bg-[var(--destructive)]"
+    : isComplete
+      ? "w-16 bg-[var(--primary)]"
+      : phase === "opening"
+        ? "w-12 bg-[var(--primary)]"
+        : "w-6 bg-[var(--primary)]";
 
   return (
     <div className="relative flex h-screen w-screen items-center justify-center overflow-y-auto px-6 py-10">
@@ -121,20 +172,14 @@ export default function GeneratePage() {
       >
         <div className="mb-6 flex justify-center">
           <span
-            className={`h-1.5 rounded-full transition-all duration-500 ${
-              isComplete
-                ? "w-16 bg-[var(--primary)]"
-                : isError
-                  ? "w-2 bg-[var(--destructive)]"
-                  : "w-8 bg-[var(--primary)]"
-            }`}
+            className={`h-1.5 rounded-full transition-all duration-500 ${progressBar}`}
           />
         </div>
 
         <div className="flex flex-col items-center gap-3">
           <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[var(--primary)]/10 text-[var(--primary)]">
             <AnimatePresence mode="wait">
-              {!isComplete && !isError ? (
+              {isWorking ? (
                 <motion.span
                   key="spinner"
                   initial={{ opacity: 0 }}
@@ -157,15 +202,11 @@ export default function GeneratePage() {
           </div>
 
           <h2 className="text-lg font-semibold text-[var(--foreground)]">
-            {isError ? "生成失败" : isComplete ? "大纲已就绪" : "正在生成大纲…"}
+            {headline}
           </h2>
 
           <p className="max-w-sm text-center text-sm text-[var(--muted-foreground)]">
-            {isError
-              ? "请返回主页修改主题后再试一次"
-              : isComplete
-                ? "正在进入学习空间"
-                : "AI 正在理解你的主题并梳理知识结构"}
+            {subline}
           </p>
         </div>
 

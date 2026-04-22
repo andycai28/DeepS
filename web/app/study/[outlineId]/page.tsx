@@ -108,7 +108,13 @@ export default function StudyPage() {
     setIsSending(true);
     setChatError(null);
 
-    postStudyChat(outlineId, { history: [] }, controller.signal)
+    // Kickoff always starts without a selected KP — new-topic resets that
+    // invariant and first-entry via /generate won't have one either.
+    postStudyChat(
+      outlineId,
+      { history: [], currentKpId: null },
+      controller.signal,
+    )
       .then((response) => {
         if (controller.signal.aborted) return;
         const next: StudyMessage[] = [
@@ -152,7 +158,7 @@ export default function StudyPage() {
     try {
       const response = await postStudyChat(
         outlineId,
-        { history },
+        { history, currentKpId: selectedKpId },
         controller.signal,
       );
       if (controller.signal.aborted) return;
@@ -176,7 +182,7 @@ export default function StudyPage() {
         setIsSending(false);
       }
     }
-  }, [composerValue, isSending, messages, outlineId]);
+  }, [composerValue, isSending, messages, outlineId, selectedKpId]);
 
   const handleSelectKp = useCallback((kp: KnowledgePoint) => {
     setSelectedKpId(kp.id);

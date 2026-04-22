@@ -1,12 +1,13 @@
 """Outline-driven tutor chat.
 
-Given a persisted Outline + a chat history, generate the next teacher
-response. When the history is empty, the teacher produces a course
-opening (see `teacher_system.md`'s "first turn" instructions).
+Given a persisted Outline + a chat history + an optional `current_kp_id`,
+produce the next teacher reply. When history is empty, the teacher opens
+the class; when a `current_kp_id` is provided, the system prompt's State
+section pivots to that knowledge point while keeping a brief list of the
+other knowledge points for global awareness.
 
-The system prompt is built from the teacher prompt template with the
-outline's title, description, languageDirective, and knowledge-point
-list interpolated in. Students should never see these internals.
+Mirrors OpenMAIC's `buildStateContext` pattern: a short overview of all
+scenes + full details for the currently-focused one.
 """
 
 from __future__ import annotations
@@ -45,25 +46,60 @@ def _load_template(name: str) -> str:
     return (_PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8")
 
 
-def _format_knowledge_point_list(points: list[KnowledgePoint]) -> str:
-    """Render KPs as a compact numbered list for inclusion in the system prompt."""
-    if not points:
-        return "(no knowledge points provided)"
+def _find_kp(outline: Outline, kp_id: str | None) -> KnowledgePoint | None:
+    if not kp_id:
+        return None
+    return next((kp for kp in outline.outlines if kp.id == kp_id), None)
 
-    lines: list[str] = []
-    for kp in points:
-        header = f"{kp.order}. **{kp.title}**"
-        if kp.description:
-            header += f" — {kp.description}"
-        lines.append(header)
-        if kp.teaching_objective:
-            lines.append(f"   - *Objective*: {kp.teaching_objective}")
-        for req in kp.key_points:
-            lines.append(f"   - {req}")
+
+def _format_overview_line(kp: KnowledgePoint) -> str:
+    return f"  {kp.order}. {kp.title} (id: {kp.id})"
+
+
+def _build_state_context(
+    outline: Outline,
+    current_kp_id: str | None,
+) -> str:
+    """Render the dynamic `## State` section embedded in the system prompt.
+
+    Matches OpenMAIC's pattern: one focused section with full details for
+    the current KP, plus a brief overview of every KP for global awareness.
+    """
+    lines: list[str] = [f"Total knowledge points: {len(outline.outlines)}"]
+
+    current_kp = _find_kp(outline, current_kp_id)
+
+    if current_kp is not None:
+        lines.append("")
+        lines.append(
+            f'Current focus: "{current_kp.title}" (id: {current_kp.id})'
+        )
+        if current_kp.description:
+            lines.append(f"  Description: {current_kp.description}")
+        if current_kp.teaching_objective:
+            lines.append(f"  Teaching objective: {current_kp.teaching_objective}")
+        if current_kp.key_points:
+            lines.append("  Student should be able to:")
+            for req in current_kp.key_points:
+                lines.append(f"  - {req}")
+    else:
+        lines.append("")
+        lines.append(
+            "No current focus yet — the student is browsing the course.",
+        )
+
+    lines.append("")
+    lines.append("All knowledge points (overview):")
+    if outline.outlines:
+        for kp in outline.outlines:
+            lines.append(_format_overview_line(kp))
+    else:
+        lines.append("  (no knowledge points defined)")
+
     return "\n".join(lines)
 
 
-def _build_system_prompt(outline: Outline) -> str:
+def _build_system_prompt(outline: Outline, current_kp_id: str | None) -> str:
     template = _load_template(_TEACHER_SYSTEM_TEMPLATE)
     directive = outline.language_directive.strip() or (
         "Teach in the language of the course title unless overridden."
@@ -72,15 +108,16 @@ def _build_system_prompt(outline: Outline) -> str:
         template.replace("{{title}}", outline.title or "Untitled course")
         .replace("{{description}}", outline.description or "(no overview)")
         .replace("{{languageDirective}}", directive)
-        .replace("{{knowledgePointList}}", _format_knowledge_point_list(outline.outlines))
+        .replace("{{stateContext}}", _build_state_context(outline, current_kp_id))
     )
 
 
 def _build_messages(
     outline: Outline,
     history: list[ChatMessage],
+    current_kp_id: str | None,
 ) -> list[dict[str, object]]:
-    system_prompt = _build_system_prompt(outline)
+    system_prompt = _build_system_prompt(outline, current_kp_id)
     messages: list[dict[str, object]] = [
         {"role": "system", "content": system_prompt},
     ]
@@ -99,17 +136,28 @@ def _build_messages(
 async def generate_tutor_reply(
     outline: Outline,
     history: list[ChatMessage],
+    current_kp_id: str | None = None,
 ) -> str:
-    """Produce the next teacher response given the outline and prior turns."""
-    messages = _build_messages(outline, history)
+    """Produce the next teacher response.
+
+    Args:
+        outline: The persisted syllabus.
+        history: Prior chat turns between the student and tutor.
+        current_kp_id: Optional id of the knowledge point the student has
+            selected in the sidebar. When provided and valid, its full
+            details flood the State section; otherwise State contains only
+            the overview list.
+    """
+    messages = _build_messages(outline, history, current_kp_id)
 
     config = get_llm_config()
     binding = config.binding or "openai"
 
     logger.info(
-        "Tutor reply for outline=%s turn=%d binding=%s/%s",
+        "Tutor reply for outline=%s turn=%d focus=%s binding=%s/%s",
         outline.id,
         len(history),
+        current_kp_id or "-",
         binding,
         config.model,
     )

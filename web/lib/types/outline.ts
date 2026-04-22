@@ -56,6 +56,7 @@ export interface StudyMessage {
 
 export interface StudyChatRequest {
   history: StudyMessage[];
+  currentKpId?: string | null;
 }
 
 export interface StudyChatResponse {

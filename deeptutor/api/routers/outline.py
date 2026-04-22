@@ -29,7 +29,10 @@ class GenerateOutlineRequest(BaseModel):
 class StudyChatRequest(BaseModel):
     """POST /{outline_id}/chat body."""
 
+    model_config = {"populate_by_name": True}
+
     history: list[ChatMessage] = Field(default_factory=list)
+    current_kp_id: str | None = Field(default=None, alias="currentKpId")
 
 
 class StudyChatResponse(BaseModel):
@@ -93,7 +96,11 @@ async def post_study_chat(
     """
     outline = _load_outline_or_404(outline_id)
     try:
-        reply = await generate_tutor_reply(outline, request.history)
+        reply = await generate_tutor_reply(
+            outline,
+            request.history,
+            current_kp_id=request.current_kp_id,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Tutor reply failed for outline=%s", outline_id)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
