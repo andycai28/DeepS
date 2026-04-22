@@ -18,6 +18,10 @@ import OutlineVisualizer from "./components/OutlineVisualizer";
 const REQUIREMENT_STORAGE_KEY = "ds:requirement";
 const OUTLINE_STORAGE_PREFIX = "ds:outline:";
 const MESSAGES_STORAGE_PREFIX = "ds:study:";
+// Tracks which outline is "active" in /chat. The chat layout reads this
+// so the knowledge-point sidebar survives across the URL rewrites the
+// chat page does when it assigns a server session id.
+const ACTIVE_OUTLINE_STORAGE_KEY = "ds:chat:activeOutlineId";
 const POST_COMPLETE_DELAY_MS = 500;
 
 type Phase = "bootstrapping" | "outline" | "opening" | "complete" | "error";
@@ -99,7 +103,10 @@ export default function GeneratePage() {
 
       setTimeout(() => {
         if (controller.signal.aborted) return;
-        router.replace(`/study/${encodeURIComponent(outline.id)}`);
+        // Pin this as the active outline so the chat sidebar keeps
+        // showing it after the chat page mutates the URL on first send.
+        sessionStorage.setItem(ACTIVE_OUTLINE_STORAGE_KEY, outline.id);
+        router.replace(`/chat?outline_id=${encodeURIComponent(outline.id)}`);
       }, POST_COMPLETE_DELAY_MS);
     };
 
