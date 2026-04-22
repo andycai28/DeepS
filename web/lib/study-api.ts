@@ -76,12 +76,23 @@ export async function streamStudyChat(
   }
 
   try {
+    // Last-line-of-defence filter: the server's schema rejects
+    // content.length === 0, but empty placeholder bubbles can still
+    // slip into the payload if upstream code forgot to scrub. Strip them
+    // here so the network boundary is always clean.
+    const sanitisedPayload = {
+      ...payload,
+      history: payload.history.filter(
+        (m) => typeof m.content === "string" && m.content.length > 0,
+      ),
+    };
+
     const response = await fetch(
       apiUrl(`/api/v1/outline/${encodeURIComponent(outlineId)}/chat`),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(sanitisedPayload),
         signal: controller.signal,
       },
     );
@@ -237,6 +248,15 @@ export async function streamDiscuss(
   }
 
   try {
+    // Same last-line filter as /chat — drop zero-length entries so the
+    // backend never sees them.
+    const sanitisedPayload = {
+      ...payload,
+      history: payload.history.filter(
+        (m) => typeof m.content === "string" && m.content.length > 0,
+      ),
+    };
+
     const response = await fetch(
       apiUrl(
         `/api/v1/outline/${encodeURIComponent(outlineId)}/discuss`,
@@ -244,7 +264,7 @@ export async function streamDiscuss(
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(sanitisedPayload),
         signal: controller.signal,
       },
     );

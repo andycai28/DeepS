@@ -1,8 +1,10 @@
 from contextlib import asynccontextmanager
 import logging
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from deeptutor.logging import get_logger
@@ -145,6 +147,40 @@ app = FastAPI(
     # See: https://github.com/HKUDS/DeepTutor/issues/112
     redirect_slashes=False,
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    """Surface Pydantic validation errors in structured form.
+
+    FastAPI's default 422 response embeds values under `ctx` that aren't
+    always JSON-serialisable (bytes, custom types, etc.), which in turn
+    makes the failure harder to read in both logs and the UI. We sanitise
+    the error list to plain loc/msg/type triples and log one line per
+    violation with the offending value so the root cause is obvious.
+    """
+    try:
+        for err in exc.errors():
+            logger.warning(
+                "[422] %s %s loc=%s msg=%r input=%r",
+                request.method,
+                request.url.path,
+                err.get("loc"),
+                err.get("msg"),
+                err.get("input"),
+            )
+    except Exception:
+        logger.exception("Failed to log 422 details")
+
+    safe_errors = [
+        {
+            "loc": list(err.get("loc", [])),
+            "msg": str(err.get("msg", "")),
+            "type": str(err.get("type", "")),
+        }
+        for err in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": safe_errors})
 
 # Log only non-200 requests (uvicorn access_log is disabled in run_server.py)
 _access_logger = logging.getLogger("uvicorn.access")
