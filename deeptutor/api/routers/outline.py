@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from deeptutor.outline import storage
+from deeptutor.outline.agents_generator import generate_agent_profiles
 from deeptutor.outline.generator import OutlineGenerationError, stream_outline
 from deeptutor.outline.models import Outline
 from deeptutor.outline.tutor import ChatMessage, stream_tutor_reply
@@ -83,10 +84,28 @@ async def post_generate_outline(
 
     async def event_stream() -> AsyncIterator[str]:
         try:
+            outline: Outline | None = None
             async for event in stream_outline(request.requirement):
                 event_type = event["type"]
                 if event_type == "done":
-                    outline: Outline = event["outline"]
+                    outline = event["outline"]
+                    # Outline is complete — now generate the discussion-mode
+                    # cast before we emit `done`, so the frontend receives
+                    # agents as a separate event in-stream and the final
+                    # outline already carries them.
+                    try:
+                        agents = await generate_agent_profiles(outline)
+                        outline.agents = agents
+                        for profile in agents:
+                            yield _sse_event(
+                                "agent",
+                                profile.model_dump(by_alias=True, mode="json"),
+                            )
+                    except Exception:
+                        logger.exception(
+                            "Agent-profile generation failed for outline=%s",
+                            outline.id,
+                        )
                     if request.persist:
                         try:
                             storage.save(outline)

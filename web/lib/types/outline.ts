@@ -31,6 +31,17 @@ export interface OutlineMetadata {
   schemaVersion: number;
 }
 
+export type AgentRole = "teacher" | "classmate" | "inquirer";
+
+export interface AgentProfile {
+  id: string; // "agent_teacher" | "agent_classmate" | "agent_inquirer"
+  role: AgentRole;
+  name: string;
+  persona: string;
+  color: string; // hex
+  avatarInitial: string;
+}
+
 export interface Outline {
   id: string;
   title: string;
@@ -38,6 +49,7 @@ export interface Outline {
   languageDirective: string;
   source: OutlineSource;
   outlines: KnowledgePoint[];
+  agents: AgentProfile[];
   metadata: OutlineMetadata;
 }
 

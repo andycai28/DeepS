@@ -5,6 +5,8 @@
 """
 
 from deeptutor.outline.models import (
+    AgentProfile,
+    AgentRole,
     KnowledgePoint,
     Outline,
     OutlineMetadata,
@@ -13,6 +15,8 @@ from deeptutor.outline.models import (
 )
 
 __all__ = [
+    "AgentProfile",
+    "AgentRole",
     "KnowledgePoint",
     "Outline",
     "OutlineMetadata",

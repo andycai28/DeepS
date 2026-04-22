@@ -8,6 +8,7 @@
 
 import { apiUrl } from "@/lib/api";
 import type {
+  AgentProfile,
   GenerateOutlineRequest,
   KnowledgePoint,
   Outline,
@@ -20,6 +21,7 @@ export interface StreamOutlineHandlers {
   onDescription?: (value: string) => void;
   onLanguageDirective?: (value: string) => void;
   onKp?: (kp: KnowledgePoint) => void;
+  onAgent?: (agent: AgentProfile) => void;
 }
 
 /**
@@ -117,6 +119,9 @@ export async function streamOutline(
           break;
         case "kp":
           handlers.onKp?.(obj as unknown as KnowledgePoint);
+          break;
+        case "agent":
+          handlers.onAgent?.(obj as unknown as AgentProfile);
           break;
         case "done":
           if (obj.outline && typeof obj.outline === "object") {
