@@ -5,8 +5,14 @@ import { useParams } from "next/navigation";
 
 import OutlineSidebar from "@/components/study/OutlineSidebar";
 import StudyChat from "@/components/study/StudyChat";
-import { fetchOutline, streamStudyChat } from "@/lib/study-api";
+import {
+  fetchOutline,
+  streamDiscuss,
+  streamStudyChat,
+} from "@/lib/study-api";
 import type {
+  AgentProfile,
+  DiscussionMessage,
   KnowledgePoint,
   Outline,
   StudyMessage,
@@ -14,19 +20,21 @@ import type {
 
 const OUTLINE_CACHE_PREFIX = "ds:outline:";
 const MESSAGES_CACHE_PREFIX = "ds:study:";
+const DISCUSSION_MODE_PREFIX = "ds:discussion:";
 
 function messagesKey(outlineId: string): string {
   return `${MESSAGES_CACHE_PREFIX}${outlineId}:messages`;
+}
+
+function discussionModeKey(outlineId: string): string {
+  return `${DISCUSSION_MODE_PREFIX}${outlineId}`;
 }
 
 /**
  * Append `chunk` to the content of the last message in the list, returning a
  * new array. Used while streaming an assistant reply token-by-token.
  */
-function appendToLast(
-  list: StudyMessage[],
-  chunk: string,
-): StudyMessage[] {
+function appendToLast(list: StudyMessage[], chunk: string): StudyMessage[] {
   if (list.length === 0) return list;
   const copy = [...list];
   const last = copy[copy.length - 1];
@@ -35,6 +43,33 @@ function appendToLast(
     content: last.content + chunk,
   };
   return copy;
+}
+
+function appendToLastByAgent(
+  list: StudyMessage[],
+  agentId: string,
+  chunk: string,
+): StudyMessage[] {
+  if (list.length === 0) return list;
+  const copy = [...list];
+  const last = copy[copy.length - 1];
+  if (last.agentId !== agentId) return list;
+  copy[copy.length - 1] = {
+    ...last,
+    content: last.content + chunk,
+  };
+  return copy;
+}
+
+function toDiscussionHistory(messages: StudyMessage[]): DiscussionMessage[] {
+  return messages
+    .filter((m) => m.content.length > 0)
+    .map((m) => ({
+      role: m.role,
+      content: m.content,
+      agentId: m.agentId ?? null,
+      agentName: m.agentName ?? null,
+    }));
 }
 
 export default function StudyPage() {
@@ -49,6 +84,7 @@ export default function StudyPage() {
   const [isSending, setIsSending] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
   const [selectedKpId, setSelectedKpId] = useState<string | null>(null);
+  const [discussionMode, setDiscussionMode] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const kickoffStartedRef = useRef(false);
 
@@ -86,7 +122,7 @@ export default function StudyPage() {
     };
   }, [outlineId]);
 
-  // 2. Hydrate chat history from sessionStorage once outline is loaded.
+  // 2. Hydrate chat history + discussion-mode flag from sessionStorage.
   useEffect(() => {
     if (!outline || messagesHydrated) return;
     const cached = sessionStorage.getItem(messagesKey(outlineId));
@@ -97,6 +133,8 @@ export default function StudyPage() {
         sessionStorage.removeItem(messagesKey(outlineId));
       }
     }
+    const modeCache = sessionStorage.getItem(discussionModeKey(outlineId));
+    if (modeCache === "on") setDiscussionMode(true);
     setMessagesHydrated(true);
   }, [outline, outlineId, messagesHydrated]);
 
@@ -136,7 +174,7 @@ export default function StudyPage() {
         if (controller.signal.aborted) return;
         setChatError(err instanceof Error ? err.message : "课堂开篇失败");
         setMessages([]);
-        kickoffStartedRef.current = false; // allow retry after failure
+        kickoffStartedRef.current = false;
       })
       .finally(() => {
         if (controller.signal.aborted) return;
@@ -148,29 +186,110 @@ export default function StudyPage() {
     };
   }, [outline, outlineId, messages.length, messagesHydrated]);
 
+  // Discussion is available only when the outline generated a cast.
+  const discussionAvailable = (outline?.agents?.length ?? 0) > 0;
+
+  const handleToggleDiscussion = useCallback(() => {
+    if (!discussionAvailable) return;
+    setDiscussionMode((prev) => {
+      const next = !prev;
+      sessionStorage.setItem(
+        discussionModeKey(outlineId),
+        next ? "on" : "off",
+      );
+      return next;
+    });
+  }, [discussionAvailable, outlineId]);
+
+  const persistMessages = useCallback(
+    (next: StudyMessage[]) => {
+      sessionStorage.setItem(messagesKey(outlineId), JSON.stringify(next));
+    },
+    [outlineId],
+  );
+
   const handleSubmit = useCallback(async () => {
     const trimmed = composerValue.trim();
     if (!trimmed || isSending) return;
 
     const priorMessages = messages;
-    const history: StudyMessage[] = [
+    const historyWithUser: StudyMessage[] = [
       ...priorMessages,
       { role: "user", content: trimmed },
     ];
 
     setIsSending(true);
     setChatError(null);
-    // User turn + empty assistant placeholder; onChunk will fill the placeholder.
-    setMessages([...history, { role: "assistant", content: "" }]);
     setComposerValue("");
 
     const controller = new AbortController();
     abortRef.current = controller;
 
+    if (discussionMode) {
+      // Discussion mode: multiple agent bubbles may land per user turn.
+      // We don't push a placeholder yet — agent_start events do that.
+      setMessages(historyWithUser);
+
+      try {
+        await streamDiscuss(
+          outlineId,
+          {
+            history: toDiscussionHistory(historyWithUser),
+            currentKpId: selectedKpId,
+          },
+          {
+            onAgentStart: (agent) => {
+              if (controller.signal.aborted) return;
+              setMessages((prev) => [
+                ...prev,
+                {
+                  role: "assistant",
+                  content: "",
+                  agentId: agent.id,
+                  agentName: agent.name,
+                  agentColor: agent.color,
+                  agentAvatarInitial: agent.avatarInitial,
+                },
+              ]);
+            },
+            onAgentChunk: (agentId, content) => {
+              if (controller.signal.aborted) return;
+              setMessages((prev) =>
+                appendToLastByAgent(prev, agentId, content),
+              );
+            },
+          },
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
+
+        // Snapshot the final transcript for persistence.
+        setMessages((prev) => {
+          persistMessages(prev);
+          return prev;
+        });
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        setChatError(err instanceof Error ? err.message : "讨论失败");
+        // Drop any partial agent bubbles — restore the pre-submit transcript.
+        setMessages(priorMessages);
+        setComposerValue(trimmed);
+      } finally {
+        if (!controller.signal.aborted) setIsSending(false);
+      }
+      return;
+    }
+
+    // Single-tutor mode: one assistant bubble, streamed in place.
+    setMessages([...historyWithUser, { role: "assistant", content: "" }]);
+
     try {
       const { reply } = await streamStudyChat(
         outlineId,
-        { history, currentKpId: selectedKpId },
+        {
+          history: historyWithUser,
+          currentKpId: selectedKpId,
+        },
         {
           onChunk: (chunk) => {
             if (controller.signal.aborted) return;
@@ -182,28 +301,30 @@ export default function StudyPage() {
       if (controller.signal.aborted) return;
 
       const final: StudyMessage[] = [
-        ...history,
+        ...historyWithUser,
         { role: "assistant", content: reply },
       ];
       setMessages(final);
-      sessionStorage.setItem(messagesKey(outlineId), JSON.stringify(final));
+      persistMessages(final);
     } catch (err) {
       if (controller.signal.aborted) return;
       setChatError(err instanceof Error ? err.message : "发送失败");
-      // Roll back: remove both the user turn and the placeholder, restore composer.
       setMessages(priorMessages);
       setComposerValue(trimmed);
     } finally {
-      if (!controller.signal.aborted) {
-        setIsSending(false);
-      }
+      if (!controller.signal.aborted) setIsSending(false);
     }
-  }, [composerValue, isSending, messages, outlineId, selectedKpId]);
+  }, [
+    composerValue,
+    discussionMode,
+    isSending,
+    messages,
+    outlineId,
+    persistMessages,
+    selectedKpId,
+  ]);
 
   const handleSelectKp = useCallback((kp: KnowledgePoint) => {
-    // State-only update — the next chat request will pick this id up and the
-    // backend injects the KP's full details into the system prompt. We never
-    // pre-fill the composer; the student asks freely in natural language.
     setSelectedKpId(kp.id);
   }, []);
 
@@ -214,7 +335,7 @@ export default function StudyPage() {
     setComposerValue("");
     setSelectedKpId(null);
     setChatError(null);
-    kickoffStartedRef.current = false; // allow the kickoff effect to fire again
+    kickoffStartedRef.current = false;
   }, [outlineId]);
 
   if (outlineError) {
@@ -257,6 +378,9 @@ export default function StudyPage() {
               ? outline.outlines.find((kp) => kp.id === selectedKpId)?.title ?? null
               : null
           }
+          discussionMode={discussionMode}
+          discussionAvailable={discussionAvailable}
+          onToggleDiscussion={handleToggleDiscussion}
         />
       </main>
     </div>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, type KeyboardEvent } from "react";
-import { ArrowUp, Loader2 } from "lucide-react";
+import { ArrowUp, Loader2, Users } from "lucide-react";
 
 import Message from "./Message";
 import type { StudyMessage } from "@/lib/types/outline";
@@ -14,6 +14,11 @@ interface StudyChatProps {
   isSending: boolean;
   errorMessage: string | null;
   focusedKpTitle: string | null;
+  /** Whether the user has toggled discussion (multi-agent) mode on. */
+  discussionMode: boolean;
+  /** Whether the outline even has a cast (affects pill enabled state). */
+  discussionAvailable: boolean;
+  onToggleDiscussion: () => void;
 }
 
 export default function StudyChat({
@@ -24,6 +29,9 @@ export default function StudyChat({
   isSending,
   errorMessage,
   focusedKpTitle,
+  discussionMode,
+  discussionAvailable,
+  onToggleDiscussion,
 }: StudyChatProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -43,20 +51,44 @@ export default function StudyChat({
   };
 
   const lastMsg = messages[messages.length - 1];
-  // Before the SSE stream emits its first chunk, the trailing assistant
-  // bubble is empty — surface a subtle "thinking" indicator until content
-  // starts flowing in. As soon as any content arrives, this auto-hides.
+  // Empty trailing assistant bubble = a streaming placeholder still
+  // waiting for its first token. Kickoff / each agent_start pushes
+  // one of these.
   const awaitingFirstToken =
     isSending &&
     lastMsg?.role === "assistant" &&
     lastMsg.content.length === 0;
 
-  // Visible messages: hide the empty placeholder from the stream so the
-  // "thinking" indicator can take its spot cleanly. Once tokens arrive,
-  // the message has content and renders normally.
+  // Discussion mode between agents: user just spoke (or an agent
+  // just finished) and director is picking the next speaker — no
+  // placeholder exists yet but a reply is coming. Show a muted pill.
+  const betweenAgents =
+    isSending &&
+    !awaitingFirstToken &&
+    lastMsg !== undefined &&
+    !(lastMsg.role === "assistant" && !lastMsg.content);
+
+  // Hide the empty placeholder from the feed so the "thinking" pill
+  // takes its slot cleanly.
   const visibleMessages = awaitingFirstToken
     ? messages.slice(0, -1)
     : messages;
+
+  const thinkingLabel = (() => {
+    if (visibleMessages.length === 0) return "正在准备课堂开篇…";
+    if (awaitingFirstToken) {
+      if (lastMsg?.role === "assistant" && lastMsg.agentName) {
+        return `${lastMsg.agentName} 正在发言…`;
+      }
+      return "AI 老师正在思考…";
+    }
+    if (betweenAgents) {
+      return discussionMode
+        ? "🎭 导演在安排下一位发言…"
+        : "AI 老师正在思考…";
+    }
+    return "";
+  })();
 
   return (
     <div className="flex h-full flex-col">
@@ -65,12 +97,10 @@ export default function StudyChat({
           {visibleMessages.map((msg, idx) => (
             <Message key={idx} message={msg} />
           ))}
-          {awaitingFirstToken && (
+          {thinkingLabel && (
             <div className="flex items-center gap-2 text-sm text-[var(--muted-foreground)]">
               <Loader2 className="h-4 w-4 animate-spin" />
-              {visibleMessages.length === 0
-                ? "正在准备课堂开篇…"
-                : "AI 老师正在思考…"}
+              {thinkingLabel}
             </div>
           )}
         </div>
@@ -92,7 +122,9 @@ export default function StudyChat({
               placeholder={
                 focusedKpTitle
                   ? `聚焦【${focusedKpTitle}】 · 问我任何相关问题…`
-                  : "提问、追问、或点左侧知识点…"
+                  : discussionMode
+                    ? "向全班提问，几位同学会一起回应…"
+                    : "提问、追问、或点左侧知识点…"
               }
               rows={3}
               className="w-full resize-none rounded-xl border border-[var(--border)] bg-[var(--card)] px-4 py-3 pr-14 text-sm leading-relaxed text-[var(--foreground)] shadow-sm outline-none transition placeholder:text-[var(--muted-foreground)] focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-60"
@@ -111,8 +143,28 @@ export default function StudyChat({
               )}
             </button>
           </div>
-          <div className="mt-2 text-[11px] text-[var(--muted-foreground)]">
-            Enter 发送 · Shift+Enter 换行
+          <div className="mt-2 flex items-center justify-between text-[11px] text-[var(--muted-foreground)]">
+            <button
+              type="button"
+              onClick={onToggleDiscussion}
+              disabled={!discussionAvailable || isSending}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                discussionMode
+                  ? "border-[var(--primary)] bg-[var(--primary)]/10 text-[var(--primary)]"
+                  : "border-[var(--border)] bg-[var(--card)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+              }`}
+              title={
+                discussionAvailable
+                  ? discussionMode
+                    ? "关闭讨论模式（回到单老师）"
+                    : "打开讨论模式（多位同学一起学习）"
+                  : "当前大纲未配备讨论班级，无法进入讨论模式"
+              }
+            >
+              <Users className="h-3 w-3" />
+              讨论模式 {discussionMode ? "ON" : "OFF"}
+            </button>
+            <span>Enter 发送 · Shift+Enter 换行</span>
           </div>
         </div>
       </div>

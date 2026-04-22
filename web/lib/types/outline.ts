@@ -64,6 +64,14 @@ export type StudyRole = "user" | "assistant";
 export interface StudyMessage {
   role: StudyRole;
   content: string;
+  /** Discussion mode only: which cast member produced this assistant turn. */
+  agentId?: string | null;
+  /** Display name at render time. */
+  agentName?: string | null;
+  /** Avatar/bubble color (hex). */
+  agentColor?: string | null;
+  /** First character of the agent's name for the avatar bubble. */
+  agentAvatarInitial?: string | null;
 }
 
 export interface StudyChatRequest {
@@ -74,4 +82,18 @@ export interface StudyChatRequest {
 export interface StudyChatResponse {
   reply: string;
   isOpening: boolean;
+}
+
+// --- Discussion mode payloads (POST /{id}/discuss body) --- //
+
+export interface DiscussionMessage {
+  role: StudyRole;
+  content: string;
+  agentId?: string | null;
+  agentName?: string | null;
+}
+
+export interface DiscussionRequest {
+  history: DiscussionMessage[];
+  currentKpId?: string | null;
 }
