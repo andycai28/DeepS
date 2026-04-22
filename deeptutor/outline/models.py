@@ -1,0 +1,80 @@
+"""Outline Pydantic models.
+
+JSON 字段使用 camelCase（对齐 OpenMAIC 与前端 TS 侧），Python 代码使用 snake_case。
+通过 `populate_by_name=True` + `alias` 双向互通。
+
+持久化：`Outline.model_dump_json(by_alias=True)` 得到 camelCase JSON；
+解析 LLM 输出：`Outline.model_validate_json(raw)` 自动识别 camelCase。
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from enum import Enum
+from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _new_outline_id() -> str:
+    return f"ol-{uuid4().hex[:8]}"
+
+
+class OutlineSourceType(str, Enum):
+    TOPIC = "topic"
+    DOCUMENT = "document"  # reserved; Phase 1 未实现
+
+
+class OutlineSource(BaseModel):
+    """大纲生成的输入来源。Phase 1 只实现 topic 模式，documentRefs 预留始终为 []。"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    type: OutlineSourceType = OutlineSourceType.TOPIC
+    topic: str = ""
+    document_refs: list[str] = Field(default_factory=list, alias="documentRefs")
+
+
+class KnowledgePoint(BaseModel):
+    """平铺列表中的一条知识点，对应 OpenMAIC SceneOutline 的教学核心字段。"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    order: int
+    title: str
+    description: str = ""
+    key_points: list[str] = Field(default_factory=list, alias="keyPoints")
+    teaching_objective: str | None = Field(default=None, alias="teachingObjective")
+    estimated_duration: int | None = Field(default=None, alias="estimatedDuration")
+    language_note: str | None = Field(default=None, alias="languageNote")
+
+
+class OutlineMetadata(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    created_at: datetime = Field(default_factory=_now, alias="createdAt")
+    updated_at: datetime = Field(default_factory=_now, alias="updatedAt")
+    llm_model: str | None = Field(default=None, alias="llmModel")
+    schema_version: int = Field(default=1, alias="schemaVersion")
+
+
+class Outline(BaseModel):
+    """大纲根对象 — 持久化单元。"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str = Field(default_factory=_new_outline_id)
+    title: str = ""
+    description: str = ""
+    language_directive: str = Field(default="", alias="languageDirective")
+    source: OutlineSource = Field(default_factory=OutlineSource)
+    outlines: list[KnowledgePoint] = Field(default_factory=list)
+    metadata: OutlineMetadata = Field(default_factory=OutlineMetadata)
+
+    def touch(self) -> None:
+        self.metadata.updated_at = _now()
