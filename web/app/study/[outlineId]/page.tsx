@@ -90,6 +90,14 @@ export default function StudyPage() {
   const [streamingFor, setStreamingFor] = useState<StreamingFor>(null);
   const abortRef = useRef<AbortController | null>(null);
   const kickoffStartedRef = useRef(false);
+  // Mirrors `messages` so we can read the post-stream transcript outside
+  // setState callbacks (React Strict Mode double-invokes updaters, which
+  // would cause two sessionStorage writes if we persisted inside one).
+  const messagesRef = useRef<StudyMessage[]>([]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   // 1. Load outline (sessionStorage first, fallback backend).
   useEffect(() => {
@@ -185,10 +193,7 @@ export default function StudyPage() {
     )
       .then(() => {
         if (controller.signal.aborted) return;
-        setMessages((prev) => {
-          persistMessages(prev);
-          return prev;
-        });
+        persistMessages(messagesRef.current);
       })
       .catch((err) => {
         if (controller.signal.aborted) return;
@@ -297,10 +302,7 @@ export default function StudyPage() {
         );
         if (controller.signal.aborted) return;
 
-        setMessages((prev) => {
-          persistMessages(prev);
-          return prev;
-        });
+        persistMessages(messagesRef.current);
       } catch (err) {
         if (controller.signal.aborted) return;
         setChatError(err instanceof Error ? err.message : "讨论失败");
@@ -346,10 +348,7 @@ export default function StudyPage() {
       );
       if (controller.signal.aborted) return;
 
-      setMessages((prev) => {
-        persistMessages(prev);
-        return prev;
-      });
+      persistMessages(messagesRef.current);
     } catch (err) {
       if (controller.signal.aborted) return;
       setChatError(err instanceof Error ? err.message : "发送失败");
@@ -375,15 +374,29 @@ export default function StudyPage() {
     setSelectedKpId(kp.id);
   }, []);
 
+  const handleComposerChange = useCallback(
+    (value: string) => {
+      setComposerValue(value);
+      // Clear the stale error banner once the student starts editing — it
+      // was tied to the prior submit, not this new attempt.
+      if (chatError) setChatError(null);
+    },
+    [chatError],
+  );
+
   const handleNewTopic = useCallback(() => {
+    // All setState calls below are batched into a single render by React,
+    // so the relative order doesn't affect the kickoff effect's re-run —
+    // it sees the final state (messages.length === 0,
+    // kickoffStartedRef.current === false) after this handler returns.
     abortRef.current?.abort();
     sessionStorage.removeItem(messagesKey(outlineId));
+    kickoffStartedRef.current = false;
     setMessages([]);
     setComposerValue("");
     setSelectedKpId(null);
     setChatError(null);
     setStreamingFor(null);
-    kickoffStartedRef.current = false;
   }, [outlineId]);
 
   if (outlineError) {
@@ -417,7 +430,7 @@ export default function StudyPage() {
         <StudyChat
           messages={messages}
           composerValue={composerValue}
-          onComposerChange={setComposerValue}
+          onComposerChange={handleComposerChange}
           onSubmit={handleSubmit}
           isSending={isSending}
           errorMessage={chatError}

@@ -57,7 +57,7 @@ def _format_overview_line(kp: KnowledgePoint) -> str:
     return f"  {kp.order}. {kp.title} (id: {kp.id})"
 
 
-def _build_state_context(
+def build_state_context(
     outline: Outline,
     current_kp_id: str | None,
 ) -> str:
@@ -109,7 +109,7 @@ def _build_system_prompt(outline: Outline, current_kp_id: str | None) -> str:
         template.replace("{{title}}", outline.title or "Untitled course")
         .replace("{{description}}", outline.description or "(no overview)")
         .replace("{{languageDirective}}", directive)
-        .replace("{{stateContext}}", _build_state_context(outline, current_kp_id))
+        .replace("{{stateContext}}", build_state_context(outline, current_kp_id))
     )
 
 

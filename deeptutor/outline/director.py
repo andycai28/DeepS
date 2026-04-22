@@ -26,7 +26,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from deeptutor.outline.models import AgentProfile, Outline
-from deeptutor.outline.tutor import _build_state_context  # shared helper
+from deeptutor.outline.tutor import build_state_context
 from deeptutor.services.llm import complete, stream, supports_response_format
 from deeptutor.services.llm.config import get_llm_config
 from deeptutor.utils.json_parser import parse_json_response
@@ -126,7 +126,7 @@ def _build_director_user_prompt(
     return "\n".join(
         [
             "## Classroom state",
-            _build_state_context(outline, current_kp_id),
+            build_state_context(outline, current_kp_id),
             "",
             "## Cast",
             _format_cast_roster(outline.agents),
@@ -167,7 +167,7 @@ def _build_agent_system_prompt(
         "{{title}}": outline.title or "Untitled course",
         "{{description}}": outline.description or "(no overview)",
         "{{languageDirective}}": directive,
-        "{{stateContext}}": _build_state_context(outline, current_kp_id),
+        "{{stateContext}}": build_state_context(outline, current_kp_id),
         "{{castRoster}}": roster,
     }
     result = template
@@ -196,9 +196,12 @@ def _map_history_for_agent(
             mapped.append(
                 {"role": "user", "content": f"{name}：{msg.content}"},
             )
-    # Ensure the last message is a user turn — some providers require it.
+    # Ensure the last message is a user turn — some OpenAI-compatible
+    # providers reject a trailing assistant turn. The content is a
+    # language-neutral ellipsis so it doesn't leak a Chinese (or any
+    # specific-language) hint into non-Chinese classrooms.
     if mapped and mapped[-1]["role"] != "user":
-        mapped.append({"role": "user", "content": "(轮到你发言)"})
+        mapped.append({"role": "user", "content": "..."})
     return mapped
 
 
