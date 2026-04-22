@@ -19,20 +19,6 @@ function messagesKey(outlineId: string): string {
   return `${MESSAGES_CACHE_PREFIX}${outlineId}:messages`;
 }
 
-function buildKpPrompt(kp: KnowledgePoint): string {
-  const lines: string[] = [`请深入讲解知识点【${kp.title}】。`];
-  if (kp.description) {
-    lines.push("", kp.description);
-  }
-  if (kp.keyPoints.length > 0) {
-    lines.push("", "我希望重点掌握：");
-    for (const p of kp.keyPoints) {
-      lines.push(`- ${p}`);
-    }
-  }
-  return lines.join("\n");
-}
-
 export default function StudyPage() {
   const params = useParams<{ outlineId: string }>();
   const outlineId = params.outlineId;
@@ -185,8 +171,10 @@ export default function StudyPage() {
   }, [composerValue, isSending, messages, outlineId, selectedKpId]);
 
   const handleSelectKp = useCallback((kp: KnowledgePoint) => {
+    // State-only update — the next chat request will pick this id up and the
+    // backend injects the KP's full details into the system prompt. We never
+    // pre-fill the composer; the student asks freely in natural language.
     setSelectedKpId(kp.id);
-    setComposerValue(buildKpPrompt(kp));
   }, []);
 
   const handleNewTopic = useCallback(() => {
@@ -234,6 +222,11 @@ export default function StudyPage() {
           onSubmit={handleSubmit}
           isSending={isSending}
           errorMessage={chatError}
+          focusedKpTitle={
+            selectedKpId
+              ? outline.outlines.find((kp) => kp.id === selectedKpId)?.title ?? null
+              : null
+          }
         />
       </main>
     </div>

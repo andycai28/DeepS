@@ -13,6 +13,7 @@ interface StudyChatProps {
   onSubmit: () => void;
   isSending: boolean;
   errorMessage: string | null;
+  focusedKpTitle: string | null;
 }
 
 export default function StudyChat({
@@ -22,6 +23,7 @@ export default function StudyChat({
   onSubmit,
   isSending,
   errorMessage,
+  focusedKpTitle,
 }: StudyChatProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -80,7 +82,11 @@ export default function StudyChat({
               onChange={(e) => onComposerChange(e.target.value)}
               onKeyDown={handleKeyDown}
               disabled={isSending}
-              placeholder="提问、追问、或点左侧知识点…"
+              placeholder={
+                focusedKpTitle
+                  ? `聚焦【${focusedKpTitle}】 · 问我任何相关问题…`
+                  : "提问、追问、或点左侧知识点…"
+              }
               rows={3}
               className="w-full resize-none rounded-xl border border-[var(--border)] bg-[var(--card)] px-4 py-3 pr-14 text-sm leading-relaxed text-[var(--foreground)] shadow-sm outline-none transition placeholder:text-[var(--muted-foreground)] focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-60"
             />
