@@ -288,7 +288,12 @@ export async function streamDiscuss(
           handlers.onDirectorThinking?.();
           break;
         case "agent_start": {
-          handlers.onAgentStart?.(obj as unknown as AgentProfile);
+          // Backend wraps the profile under an "agent" key; unwrap before
+          // handing to the handler.
+          const profile = (obj as { agent?: unknown }).agent;
+          if (profile && typeof profile === "object") {
+            handlers.onAgentStart?.(profile as AgentProfile);
+          }
           break;
         }
         case "agent_chunk": {
