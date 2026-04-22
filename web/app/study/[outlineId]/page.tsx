@@ -30,10 +30,6 @@ function discussionModeKey(outlineId: string): string {
   return `${DISCUSSION_MODE_PREFIX}${outlineId}`;
 }
 
-/**
- * Append `chunk` to the content of the last message in the list, returning a
- * new array. Used while streaming an assistant reply token-by-token.
- */
 function appendToLast(list: StudyMessage[], chunk: string): StudyMessage[] {
   if (list.length === 0) return list;
   const copy = [...list];
@@ -61,28 +57,22 @@ function appendToLastByAgent(
   return copy;
 }
 
-/**
- * Drop messages whose content didn't land (stream cut early, agent returned
- * empty, etc.). The backend's Pydantic schemas require content.length >= 1,
- * so empty entries must never make it into sessionStorage or the next
- * request payload.
- */
-function dropEmptyContent(list: StudyMessage[]): StudyMessage[] {
-  return list.filter(
-    (m) => typeof m.content === "string" && m.content.length > 0,
-  );
+function toDiscussionHistory(messages: StudyMessage[]): DiscussionMessage[] {
+  return messages.map((m) => ({
+    role: m.role,
+    content: m.content,
+    agentId: m.agentId ?? null,
+    agentName: m.agentName ?? null,
+  }));
 }
 
-function toDiscussionHistory(messages: StudyMessage[]): DiscussionMessage[] {
-  return messages
-    .filter((m) => m.content.length > 0)
-    .map((m) => ({
-      role: m.role,
-      content: m.content,
-      agentId: m.agentId ?? null,
-      agentName: m.agentName ?? null,
-    }));
-}
+/** Signal about which source is currently streaming but hasn't emitted
+ *  any visible content yet. Cleared as soon as the first chunk lands. */
+type StreamingFor =
+  | null
+  | { kind: "tutor" }
+  | { kind: "agent"; agent: AgentProfile }
+  | { kind: "director" };
 
 export default function StudyPage() {
   const params = useParams<{ outlineId: string }>();
@@ -97,6 +87,7 @@ export default function StudyPage() {
   const [chatError, setChatError] = useState<string | null>(null);
   const [selectedKpId, setSelectedKpId] = useState<string | null>(null);
   const [discussionMode, setDiscussionMode] = useState(false);
+  const [streamingFor, setStreamingFor] = useState<StreamingFor>(null);
   const abortRef = useRef<AbortController | null>(null);
   const kickoffStartedRef = useRef(false);
 
@@ -140,17 +131,7 @@ export default function StudyPage() {
     const cached = sessionStorage.getItem(messagesKey(outlineId));
     if (cached) {
       try {
-        const parsed = JSON.parse(cached) as StudyMessage[];
-        // Older sessions (pre-fix) may have persisted empty placeholders —
-        // scrub them on load so the next submit doesn't hit the 422.
-        const cleaned = dropEmptyContent(parsed);
-        setMessages(cleaned);
-        if (cleaned.length !== parsed.length) {
-          sessionStorage.setItem(
-            messagesKey(outlineId),
-            JSON.stringify(cleaned),
-          );
-        }
+        setMessages(JSON.parse(cached) as StudyMessage[]);
       } catch {
         sessionStorage.removeItem(messagesKey(outlineId));
       }
@@ -159,6 +140,13 @@ export default function StudyPage() {
     if (modeCache === "on") setDiscussionMode(true);
     setMessagesHydrated(true);
   }, [outline, outlineId, messagesHydrated]);
+
+  const persistMessages = useCallback(
+    (next: StudyMessage[]) => {
+      sessionStorage.setItem(messagesKey(outlineId), JSON.stringify(next));
+    },
+    [outlineId],
+  );
 
   // 3. Auto-trigger course opening when we have outline + no prior messages.
   useEffect(() => {
@@ -170,10 +158,13 @@ export default function StudyPage() {
     const controller = new AbortController();
     abortRef.current = controller;
     setIsSending(true);
+    setStreamingFor({ kind: "tutor" });
     setChatError(null);
 
-    // Placeholder assistant bubble that streams in.
-    setMessages([{ role: "assistant", content: "" }]);
+    // Lazy bubble creation: no placeholder upfront. The first chunk is what
+    // materialises the assistant message into `messages`. If the stream ends
+    // without ever emitting a chunk, we commit nothing.
+    let bubbleCommitted = false;
 
     streamStudyChat(
       outlineId,
@@ -181,32 +172,39 @@ export default function StudyPage() {
       {
         onChunk: (chunk) => {
           if (controller.signal.aborted) return;
-          setMessages((prev) => appendToLast(prev, chunk));
+          if (!bubbleCommitted) {
+            bubbleCommitted = true;
+            setStreamingFor(null);
+            setMessages([{ role: "assistant", content: chunk }]);
+          } else {
+            setMessages((prev) => appendToLast(prev, chunk));
+          }
         },
       },
       controller.signal,
     )
-      .then(({ reply }) => {
+      .then(() => {
         if (controller.signal.aborted) return;
-        const final: StudyMessage[] = [{ role: "assistant", content: reply }];
-        setMessages(final);
-        sessionStorage.setItem(messagesKey(outlineId), JSON.stringify(final));
+        setMessages((prev) => {
+          persistMessages(prev);
+          return prev;
+        });
       })
       .catch((err) => {
         if (controller.signal.aborted) return;
         setChatError(err instanceof Error ? err.message : "课堂开篇失败");
-        setMessages([]);
         kickoffStartedRef.current = false;
       })
       .finally(() => {
         if (controller.signal.aborted) return;
         setIsSending(false);
+        setStreamingFor(null);
       });
 
     return () => {
       controller.abort();
     };
-  }, [outline, outlineId, messages.length, messagesHydrated]);
+  }, [outline, outlineId, messages.length, messagesHydrated, persistMessages]);
 
   // Discussion is available only when the outline generated a cast.
   const discussionAvailable = (outline?.agents?.length ?? 0) > 0;
@@ -223,39 +221,29 @@ export default function StudyPage() {
     });
   }, [discussionAvailable, outlineId]);
 
-  const persistMessages = useCallback(
-    (next: StudyMessage[]) => {
-      sessionStorage.setItem(messagesKey(outlineId), JSON.stringify(next));
-    },
-    [outlineId],
-  );
-
   const handleSubmit = useCallback(async () => {
     const trimmed = composerValue.trim();
     if (!trimmed || isSending) return;
 
     const priorMessages = messages;
-    // Strip any empty-content stragglers (e.g. an agent placeholder left
-    // behind by a prior discussion-mode turn that the model returned
-    // nothing for). The backend's ChatMessage / DiscussionMessage schemas
-    // require content.length >= 1, so empty entries would trip 422.
-    const cleanPrior = dropEmptyContent(priorMessages);
     const historyWithUser: StudyMessage[] = [
-      ...cleanPrior,
+      ...priorMessages,
       { role: "user", content: trimmed },
     ];
 
     setIsSending(true);
     setChatError(null);
     setComposerValue("");
+    setMessages(historyWithUser);
 
     const controller = new AbortController();
     abortRef.current = controller;
 
     if (discussionMode) {
-      // Discussion mode: multiple agent bubbles may land per user turn.
-      // We don't push a placeholder yet — agent_start events do that.
-      setMessages(historyWithUser);
+      // Discussion mode: director plus multiple agents. Bubbles materialise
+      // on the first chunk per agent — no empty placeholders.
+      setStreamingFor({ kind: "director" });
+      const pendingAgents = new Map<string, AgentProfile>();
 
       try {
         await streamDiscuss(
@@ -265,56 +253,75 @@ export default function StudyPage() {
             currentKpId: selectedKpId,
           },
           {
+            onDirectorThinking: () => {
+              if (controller.signal.aborted) return;
+              setStreamingFor({ kind: "director" });
+            },
             onAgentStart: (agent) => {
               if (controller.signal.aborted) return;
-              setMessages((prev) => [
-                ...prev,
-                {
-                  role: "assistant",
-                  content: "",
-                  agentId: agent.id,
-                  agentName: agent.name,
-                  agentColor: agent.color,
-                  agentAvatarInitial: agent.avatarInitial,
-                },
-              ]);
+              pendingAgents.set(agent.id, agent);
+              setStreamingFor({ kind: "agent", agent });
             },
             onAgentChunk: (agentId, content) => {
               if (controller.signal.aborted) return;
-              setMessages((prev) =>
-                appendToLastByAgent(prev, agentId, content),
-              );
+              const pending = pendingAgents.get(agentId);
+              if (pending) {
+                pendingAgents.delete(agentId);
+                setStreamingFor(null);
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    role: "assistant",
+                    content,
+                    agentId: pending.id,
+                    agentName: pending.name,
+                    agentColor: pending.color,
+                    agentAvatarInitial: pending.avatarInitial,
+                  },
+                ]);
+              } else {
+                setMessages((prev) =>
+                  appendToLastByAgent(prev, agentId, content),
+                );
+              }
+            },
+            onAgentEnd: (agentId) => {
+              if (controller.signal.aborted) return;
+              if (pendingAgents.delete(agentId)) {
+                // agent produced nothing — clear the indicator, don't commit.
+                setStreamingFor(null);
+              }
             },
           },
           controller.signal,
         );
         if (controller.signal.aborted) return;
 
-        // Snapshot + clean the final transcript. Agents that produced
-        // no text leave behind empty placeholders here; drop them so
-        // the next turn's request doesn't fail validation.
         setMessages((prev) => {
-          const cleaned = dropEmptyContent(prev);
-          persistMessages(cleaned);
-          return cleaned;
+          persistMessages(prev);
+          return prev;
         });
       } catch (err) {
         if (controller.signal.aborted) return;
         setChatError(err instanceof Error ? err.message : "讨论失败");
-        // Drop any partial agent bubbles — restore the pre-submit transcript.
-        setMessages(cleanPrior);
+        // Roll back: remove the user turn so they can edit and resend.
+        setMessages(priorMessages);
         setComposerValue(trimmed);
       } finally {
-        if (!controller.signal.aborted) setIsSending(false);
+        if (!controller.signal.aborted) {
+          setIsSending(false);
+          setStreamingFor(null);
+        }
       }
       return;
     }
 
-    // Single-tutor mode: one assistant bubble, streamed in place.
-    setMessages([...historyWithUser, { role: "assistant", content: "" }]);
+    // Single-tutor mode: lazy bubble creation, same pattern as kickoff.
+    setStreamingFor({ kind: "tutor" });
+    let bubbleCommitted = false;
 
     try {
-      const { reply } = await streamStudyChat(
+      await streamStudyChat(
         outlineId,
         {
           history: historyWithUser,
@@ -323,26 +330,36 @@ export default function StudyPage() {
         {
           onChunk: (chunk) => {
             if (controller.signal.aborted) return;
-            setMessages((prev) => appendToLast(prev, chunk));
+            if (!bubbleCommitted) {
+              bubbleCommitted = true;
+              setStreamingFor(null);
+              setMessages((prev) => [
+                ...prev,
+                { role: "assistant", content: chunk },
+              ]);
+            } else {
+              setMessages((prev) => appendToLast(prev, chunk));
+            }
           },
         },
         controller.signal,
       );
       if (controller.signal.aborted) return;
 
-      const final: StudyMessage[] = [
-        ...historyWithUser,
-        { role: "assistant", content: reply },
-      ];
-      setMessages(final);
-      persistMessages(final);
+      setMessages((prev) => {
+        persistMessages(prev);
+        return prev;
+      });
     } catch (err) {
       if (controller.signal.aborted) return;
       setChatError(err instanceof Error ? err.message : "发送失败");
       setMessages(priorMessages);
       setComposerValue(trimmed);
     } finally {
-      if (!controller.signal.aborted) setIsSending(false);
+      if (!controller.signal.aborted) {
+        setIsSending(false);
+        setStreamingFor(null);
+      }
     }
   }, [
     composerValue,
@@ -365,6 +382,7 @@ export default function StudyPage() {
     setComposerValue("");
     setSelectedKpId(null);
     setChatError(null);
+    setStreamingFor(null);
     kickoffStartedRef.current = false;
   }, [outlineId]);
 
@@ -411,6 +429,7 @@ export default function StudyPage() {
           discussionMode={discussionMode}
           discussionAvailable={discussionAvailable}
           onToggleDiscussion={handleToggleDiscussion}
+          streamingFor={streamingFor}
         />
       </main>
     </div>

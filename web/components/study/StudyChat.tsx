@@ -4,7 +4,14 @@ import { useEffect, useRef, type KeyboardEvent } from "react";
 import { ArrowUp, Loader2, Users } from "lucide-react";
 
 import Message from "./Message";
-import type { StudyMessage } from "@/lib/types/outline";
+import type { AgentProfile, StudyMessage } from "@/lib/types/outline";
+
+/** Matches the StreamingFor shape in the parent study page. */
+type StreamingFor =
+  | null
+  | { kind: "tutor" }
+  | { kind: "agent"; agent: AgentProfile }
+  | { kind: "director" };
 
 interface StudyChatProps {
   messages: StudyMessage[];
@@ -19,6 +26,9 @@ interface StudyChatProps {
   /** Whether the outline even has a cast (affects pill enabled state). */
   discussionAvailable: boolean;
   onToggleDiscussion: () => void;
+  /** What's currently streaming but hasn't produced visible content yet.
+   *  Null once a bubble appears or the stream ends. */
+  streamingFor: StreamingFor;
 }
 
 export default function StudyChat({
@@ -32,6 +42,7 @@ export default function StudyChat({
   discussionMode,
   discussionAvailable,
   onToggleDiscussion,
+  streamingFor,
 }: StudyChatProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -39,7 +50,7 @@ export default function StudyChat({
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, [messages, isSending]);
+  }, [messages, streamingFor]);
 
   const canSubmit = composerValue.trim().length > 0 && !isSending;
 
@@ -50,57 +61,32 @@ export default function StudyChat({
     }
   };
 
-  const lastMsg = messages[messages.length - 1];
-  // Empty trailing assistant bubble = a streaming placeholder still
-  // waiting for its first token. Kickoff / each agent_start pushes
-  // one of these.
-  const awaitingFirstToken =
-    isSending &&
-    lastMsg?.role === "assistant" &&
-    lastMsg.content.length === 0;
-
-  // Discussion mode between agents: user just spoke (or an agent
-  // just finished) and director is picking the next speaker — no
-  // placeholder exists yet but a reply is coming. Show a muted pill.
-  const betweenAgents =
-    isSending &&
-    !awaitingFirstToken &&
-    lastMsg !== undefined &&
-    !(lastMsg.role === "assistant" && !lastMsg.content);
-
-  // Hide the empty placeholder from the feed so the "thinking" pill
-  // takes its slot cleanly.
-  const visibleMessages = awaitingFirstToken
-    ? messages.slice(0, -1)
-    : messages;
-
-  const thinkingLabel = (() => {
-    if (visibleMessages.length === 0) return "正在准备课堂开篇…";
-    if (awaitingFirstToken) {
-      if (lastMsg?.role === "assistant" && lastMsg.agentName) {
-        return `${lastMsg.agentName} 正在发言…`;
-      }
-      return "AI 老师正在思考…";
+  // Loading indicator is driven entirely by `streamingFor`. A null value
+  // means either nothing is streaming or the bubble already materialised,
+  // so there's nothing extra to show.
+  let indicatorLabel: string | null = null;
+  if (streamingFor) {
+    if (streamingFor.kind === "tutor") {
+      indicatorLabel =
+        messages.length === 0 ? "正在准备课堂开篇…" : "AI 老师正在思考…";
+    } else if (streamingFor.kind === "agent") {
+      indicatorLabel = `${streamingFor.agent.name} 正在发言…`;
+    } else if (streamingFor.kind === "director") {
+      indicatorLabel = "🎭 导演在安排下一位发言…";
     }
-    if (betweenAgents) {
-      return discussionMode
-        ? "🎭 导演在安排下一位发言…"
-        : "AI 老师正在思考…";
-    }
-    return "";
-  })();
+  }
 
   return (
     <div className="flex h-full flex-col">
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-8">
         <div className="mx-auto flex max-w-3xl flex-col gap-6">
-          {visibleMessages.map((msg, idx) => (
+          {messages.map((msg, idx) => (
             <Message key={idx} message={msg} />
           ))}
-          {thinkingLabel && (
+          {indicatorLabel && (
             <div className="flex items-center gap-2 text-sm text-[var(--muted-foreground)]">
               <Loader2 className="h-4 w-4 animate-spin" />
-              {thinkingLabel}
+              {indicatorLabel}
             </div>
           )}
         </div>
