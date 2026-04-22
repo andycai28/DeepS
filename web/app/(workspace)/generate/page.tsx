@@ -45,7 +45,7 @@ export default function GeneratePage() {
 
     setStatus("generating");
 
-    generateOutline({ requirement })
+    generateOutline({ requirement }, controller.signal)
       .then((result) => {
         if (controller.signal.aborted) return;
         sessionStorage.setItem(
