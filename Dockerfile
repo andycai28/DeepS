@@ -69,7 +69,12 @@ WORKDIR /app
 # Install system dependencies
 # Note: libgl1 and libglib2.0-0 are required for OpenCV (used by mineru)
 # Rust is required for building tiktoken and other packages without pre-built wheels
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Use Tsinghua Debian mirror to avoid 502s from upstream mirror behind system proxies
+RUN sed -i \
+        -e 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' \
+        -e 's|security.debian.org|mirrors.tuna.tsinghua.edu.cn|g' \
+        /etc/apt/sources.list.d/debian.sources \
+    && apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     build-essential \
@@ -115,7 +120,12 @@ WORKDIR /app
 
 # Install system dependencies
 # Note: libgl1 and libglib2.0-0 are required for OpenCV (used by mineru)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Use Tsinghua Debian mirror to avoid 502s from upstream mirror behind system proxies
+RUN sed -i \
+        -e 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' \
+        -e 's|security.debian.org|mirrors.tuna.tsinghua.edu.cn|g' \
+        /etc/apt/sources.list.d/debian.sources \
+    && apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     bash \
@@ -340,7 +350,12 @@ COPY --from=frontend-builder /app/web/package.json ./web/package.json
 COPY --from=frontend-builder /app/web/next.config.js ./web/next.config.js
 
 # Install development tools
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Use Tsinghua Debian mirror to avoid 502s from upstream mirror behind system proxies
+RUN sed -i \
+        -e 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' \
+        -e 's|security.debian.org|mirrors.tuna.tsinghua.edu.cn|g' \
+        /etc/apt/sources.list.d/debian.sources \
+    && apt-get update && apt-get install -y --no-install-recommends \
     vim \
     git \
     && rm -rf /var/lib/apt/lists/*
