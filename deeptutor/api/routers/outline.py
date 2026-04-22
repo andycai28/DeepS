@@ -16,6 +16,11 @@ from pydantic import BaseModel, Field
 
 from deeptutor.outline import storage
 from deeptutor.outline.agents_generator import generate_agent_profiles
+from deeptutor.outline.director import (
+    DiscussionError,
+    DiscussionMessage,
+    run_discussion,
+)
 from deeptutor.outline.generator import OutlineGenerationError, stream_outline
 from deeptutor.outline.models import Outline
 from deeptutor.outline.tutor import ChatMessage, stream_tutor_reply
@@ -184,6 +189,69 @@ async def post_study_chat(
         except Exception as exc:  # noqa: BLE001
             logger.exception("Tutor stream failed for outline=%s", outline_id)
             yield _sse_event("error", {"message": str(exc)})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+class DiscussionRequest(BaseModel):
+    """POST /{outline_id}/discuss body.
+
+    Unlike single-tutor chat, each message may carry the agent identifier
+    that produced it so the director can rebuild peer context and the
+    role-mapping trick works per character.
+    """
+
+    model_config = {"populate_by_name": True}
+
+    history: list[DiscussionMessage] = Field(default_factory=list)
+    current_kp_id: str | None = Field(default=None, alias="currentKpId")
+
+
+@router.post("/{outline_id}/discuss")
+async def post_discussion(
+    outline_id: str,
+    request: DiscussionRequest,
+) -> StreamingResponse:
+    """Run one discussion-mode request/response cycle as an SSE stream.
+
+    Events:
+        event: director_thinking  data: {}
+        event: agent_start        data: {<agent profile>}
+        event: agent_chunk        data: {"agentId": "...", "content": "..."}
+        event: agent_end          data: {"agentId": "..."}
+        event: cue_user           data: {}
+        event: end                data: {}
+        event: error              data: {"message": "..."}
+    """
+    outline = _load_outline_or_404(outline_id)
+
+    async def event_stream() -> AsyncIterator[str]:
+        try:
+            async for event in run_discussion(
+                outline,
+                request.history,
+                current_kp_id=request.current_kp_id,
+            ):
+                event_type = event.pop("type")
+                yield _sse_event(event_type, event)
+        except DiscussionError as exc:
+            logger.warning(
+                "Discussion setup failed for outline=%s: %s", outline_id, exc,
+            )
+            yield _sse_event("error", {"message": str(exc)})
+            yield _sse_event("cue_user", {})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Discussion stream crashed for outline=%s", outline_id)
+            yield _sse_event("error", {"message": str(exc)})
+            yield _sse_event("cue_user", {})
 
     return StreamingResponse(
         event_stream(),
